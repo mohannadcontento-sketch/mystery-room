@@ -1,0 +1,107 @@
+// Mystery Room - Database Schema
+// Mirrors the Supabase schema requested by the user.
+// In production you can swap this Prisma+SQLite setup for Supabase
+// by replacing `prisma` calls with `supabase.from('table')` calls.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// profiles table — mirrors Supabase `profiles`
+model Profile {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  avatar       String   // emoji or image URL
+  passwordHash String   // used by our JWT auth (replaces Supabase Auth)
+  createdAt    DateTime @default(now())
+
+  // relations
+  roomsCreated    Room[]      @relation("RoomCreator")
+  roomMemberships RoomPlayer[]
+  questionsSent   Question[]  @relation("QuestionSender")
+  answersGiven    Answer[]
+
+  @@map("profiles")
+}
+
+/// rooms table — mirrors Supabase `rooms`
+model Room {
+  id        String    @id @default(cuid())
+  roomCode  String    @unique
+  creatorId String
+  gameMode  String    @default("question_for_all") // "question_for_all" | "question_for_random"
+  status    String    @default("waiting")          // waiting | answering | revealing | chatting | finished
+  createdAt DateTime  @default(now())
+
+  creator  Profile       @relation("RoomCreator", fields: [creatorId], references: [id])
+  players  RoomPlayer[]
+  questions Question[]
+  messages Message[]
+
+  @@map("rooms")
+}
+
+/// room_players table — mirrors Supabase `room_players`
+model RoomPlayer {
+  id             String   @id @default(cuid())
+  roomId         String
+  userId         String
+  anonymousName  String   // the masked identity used inside the room
+  joinedAt       DateTime @default(now())
+
+  room    Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user    Profile @relation(fields: [userId], references: [id])
+  // a user can only be in a room once
+  @@unique([roomId, userId])
+  @@map("room_players")
+}
+
+/// questions table — mirrors Supabase `questions`
+model Question {
+  id           String   @id @default(cuid())
+  roomId       String
+  senderId     String   // hidden from other players
+  targetId     String?  // nullable: used by question_for_random mode
+  questionText String
+  mode         String   // "question_for_all" | "question_for_random"
+  round        Int      @default(1)
+  createdAt    DateTime @default(now())
+
+  room    Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender  Profile  @relation("QuestionSender", fields: [senderId], references: [id])
+  answers Answer[]
+
+  @@map("questions")
+}
+
+/// answers table — mirrors Supabase `answers`
+model Answer {
+  id         String   @id @default(cuid())
+  questionId String
+  userId     String   // hidden from other players
+  answerText String
+  createdAt  DateTime @default(now())
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  user     Profile  @relation(fields: [userId], references: [id])
+
+  @@map("answers")
+}
+
+/// messages table — mirrors Supabase `messages`
+model Message {
+  id             String   @id @default(cuid())
+  roomId         String
+  anonymousUser  String   // anonymous_name, NOT real username
+  message        String
+  createdAt      DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
