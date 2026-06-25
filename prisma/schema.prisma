@@ -8,7 +8,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  // Switched to postgresql for Supabase
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -18,6 +19,7 @@ model Profile {
   username     String   @unique
   avatar       String   // emoji or image URL
   passwordHash String   // used by our JWT auth (replaces Supabase Auth)
+  role         String   @default("user") // "user" | "admin"
   createdAt    DateTime @default(now())
 
   // relations
