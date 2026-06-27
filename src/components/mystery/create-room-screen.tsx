@@ -73,6 +73,11 @@ export function CreateRoomScreen({
       icon: <MessageCircle className="h-5 w-5" />,
       tag: "عشوائي",
     },
+    {
+      id: "autocomplete_battle",
+      icon: <Sparkles className="h-5 w-5" />,
+      tag: "كومبليت",
+    },
   ];
 
   return (
