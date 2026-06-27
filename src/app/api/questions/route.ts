@@ -315,7 +315,7 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      // During "answering"+ : show only the active question (round > 0)
+      // During "answering"+ : show ALL active questions (round > 0) in order
       const { data: activeQuestions, error } = await supabase
         .from("questions")
         .select("id, question_text, round, mode, created_at, target_id, sender_id")
@@ -326,6 +326,13 @@ export async function GET(req: NextRequest) {
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 500 });
       }
+
+      // Count remaining pending questions (round=0)
+      const { count: remainingCount } = await supabase
+        .from("questions")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", roomId)
+        .eq("round", 0);
 
       return NextResponse.json({
         questions: (activeQuestions ?? []).map((q) => ({
@@ -339,6 +346,8 @@ export async function GET(req: NextRequest) {
           isMyQuestion: q.sender_id === user.id,
           isTargetedToMe: q.target_id === user.id,
         })),
+        remainingQuestions: remainingCount ?? 0,
+        totalActive: activeQuestions?.length ?? 0,
       });
     }
 

@@ -97,6 +97,7 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
   const [guessing, setGuessing] = useState<string | null>(null);
   const [scores, setScores] = useState<Array<any>>([]);
   const [winner, setWinner] = useState<any>(null);
+  const [remainingQuestions, setRemainingQuestions] = useState(0);
   const { toast } = useToast();
 
   // Poll game state every 2s
@@ -230,6 +231,9 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
   useEffect(() => {
     if (questionsData?.questions) {
       setQuestions(questionsData.questions);
+    }
+    if (questionsData?.remainingQuestions !== undefined) {
+      setRemainingQuestions(questionsData.remainingQuestions);
     }
   }, [questionsData]);
 
@@ -466,7 +470,10 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
   const isCreator = state.me.isCreator;
   const myAnonymousName = state.me.anonymousName;
   const myPlayerId = (state as any).myPlayerId as string | undefined;
-  const currentQuestion = questions[questions.length - 1];
+  // Show the LATEST active question (highest round) as the current one
+  const currentQuestion = questions.length > 0
+    ? questions.reduce((max, q) => (q.round > max.round ? q : max), questions[0])
+    : null;
 
   return (
     <div className="relative min-h-screen bg-mystery-gradient">
@@ -528,9 +535,12 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
           isCreator={isCreator}
           startedAt={roundStartedAt}
           answeringDuration={ANSWERING_DURATION}
+          thinkingDuration={THINKING_DURATION}
           revealingDuration={REVEALING_DURATION}
           chattingDuration={CHATTING_DURATION}
           onAdvance={(next) => changeState(next)}
+          remainingQuestions={remainingQuestions}
+          onPickNext={handlePickQuestion}
         />
 
         {/* Main grid */}
@@ -818,17 +828,23 @@ function PhaseBanner({
   isCreator,
   startedAt,
   answeringDuration,
+  thinkingDuration,
   revealingDuration,
   chattingDuration,
   onAdvance,
+  remainingQuestions,
+  onPickNext,
 }: {
   status: string;
   isCreator: boolean;
   startedAt?: number;
   answeringDuration: number;
+  thinkingDuration: number;
   revealingDuration: number;
   chattingDuration: number;
-  onAdvance: (next: "answering" | "revealing" | "chatting" | "finished") => void;
+  onAdvance: (next: "answering" | "thinking" | "revealing" | "chatting" | "finished" | "questioning") => void;
+  remainingQuestions?: number;
+  onPickNext?: () => void;
 }) {
   const config = {
     waiting: {
@@ -961,14 +977,26 @@ function PhaseBanner({
               </Button>
             )}
             {status === "revealing" && (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => onAdvance("chatting")}
-              >
-                <MessageSquare className="ml-1 h-4 w-4" />
-                ابدأ النقاش
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                {remainingQuestions > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={onPickNext}
+                  >
+                    <HelpCircle className="ml-1 h-4 w-4" />
+                    السؤال التالي ({remainingQuestions} متبقي)
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => onAdvance("chatting")}
+                >
+                  <MessageSquare className="ml-1 h-4 w-4" />
+                  انتهت الأسئلة — ابدأ النقاش
+                </Button>
+              </div>
             )}
             {status === "chatting" && (
               <Button
