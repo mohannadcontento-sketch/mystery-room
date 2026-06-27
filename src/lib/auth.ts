@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { cookies } from "next/headers";
-import { db } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
 
 const JWT_SECRET = process.env.JWT_SECRET || "mystery-room-dev-secret-change-me";
 const COOKIE_NAME = "mystery_session";
@@ -63,11 +63,47 @@ export async function getSession(): Promise<SessionPayload | null> {
 export async function getCurrentUser() {
   const session = await getSession();
   if (!session) return null;
-  const user = await db.profile.findUnique({
-    where: { id: session.userId },
-    select: { id: true, username: true, avatar: true, createdAt: true },
-  });
-  return user;
+  const supabase = getSupabase();
+
+  // Try with role column; fall back without
+  let { data, error } = await supabase
+    .from("profiles")
+    .select("id, username, avatar, role, created_at")
+    .eq("id", session.userId)
+    .maybeSingle();
+
+  if (error && error.message && error.message.includes("role")) {
+    const res2 = await supabase
+      .from("profiles")
+      .select("id, username, avatar, created_at")
+      .eq("id", session.userId)
+      .maybeSingle();
+    data = res2.data;
+    error = res2.error;
+    if (data) (data as any).role = "user";
+  }
+
+  if (error || !data) return null;
+
+  // Check ADMIN_USERNAMES fallback
+  let role = (data as any).role ?? "user";
+  if (!role || role === "user") {
+    const adminUsernames = (process.env.ADMIN_USERNAMES || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (adminUsernames.includes(data.username.toLowerCase())) {
+      role = "admin";
+    }
+  }
+
+  return {
+    id: data.id,
+    username: data.username,
+    avatar: data.avatar,
+    role,
+    createdAt: data.created_at,
+  };
 }
 
 /**
