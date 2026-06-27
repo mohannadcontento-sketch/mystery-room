@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
 import { hashPassword, setSessionCookie } from "@/lib/auth";
 
 const schema = z.object({
@@ -21,10 +21,14 @@ export async function POST(req: NextRequest) {
     }
 
     const { username, password, avatar } = parsed.data;
+    const supabase = getSupabase();
 
-    const existing = await db.profile.findUnique({
-      where: { username },
-    });
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("username", username)
+      .maybeSingle();
+
     if (existing) {
       return NextResponse.json(
         { error: "اسم المستخدم محجوز بالفعل" },
@@ -33,15 +37,44 @@ export async function POST(req: NextRequest) {
     }
 
     const passwordHash = await hashPassword(password);
-    const profile = await db.profile.create({
-      data: { username, avatar, passwordHash },
-      select: { id: true, username: true, avatar: true },
-    });
 
-    await setSessionCookie({
-      userId: profile.id,
-      username: profile.username,
-    });
+    // First registered user becomes admin (bootstrap)
+    const { count } = await supabase
+      .from("profiles")
+      .select("id", { count: "exact", head: true });
+    const role = (count ?? 0) === 0 ? "admin" : "user";
+
+    // Try with role first, fall back without (if column doesn't exist)
+    let profile: any = null;
+    let error: any = null;
+
+    const res = await supabase
+      .from("profiles")
+      .insert({ username, avatar, password_hash: passwordHash, role })
+      .select("id, username, avatar, role")
+      .single();
+    profile = res.data;
+    error = res.error;
+
+    if (error && error.message && error.message.includes("role")) {
+      const res2 = await supabase
+        .from("profiles")
+        .insert({ username, avatar, password_hash: passwordHash })
+        .select("id, username, avatar")
+        .single();
+      profile = res2.data;
+      error = res2.error;
+      if (profile) profile.role = role;
+    }
+
+    if (error || !profile) {
+      return NextResponse.json(
+        { error: "حدث خطأ أثناء إنشاء الحساب: " + (error?.message || "") },
+        { status: 500 },
+      );
+    }
+
+    await setSessionCookie({ userId: profile.id, username: profile.username });
 
     return NextResponse.json({ user: profile });
   } catch (e) {
