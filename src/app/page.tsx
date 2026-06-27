@@ -84,6 +84,7 @@ export default function Home() {
               onCreateRoom={() => setView({ name: "create" })}
               onJoinRoom={() => setView({ name: "join" })}
               onBrowseRooms={() => setView({ name: "join" })}
+              onOpenAdmin={() => setView({ name: "admin" })}
             />
           )}
 

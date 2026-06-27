@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  Crown,
   DoorClosed,
   DoorOpen,
   HelpCircle,
-  Loader2,
   LogIn,
   MessageCircle,
+  Shield,
   Sparkles,
   Users,
   Wand2,
@@ -26,7 +26,6 @@ import {
   GAME_MODE_LABELS,
   type GameMode,
   type Profile,
-  type Room,
 } from "@/lib/types";
 
 interface HomeScreenProps {
@@ -34,6 +33,7 @@ interface HomeScreenProps {
   onCreateRoom: () => void;
   onJoinRoom: () => void;
   onBrowseRooms: () => void;
+  onOpenAdmin?: () => void;
 }
 
 export function HomeScreen({
@@ -41,7 +41,10 @@ export function HomeScreen({
   onCreateRoom,
   onJoinRoom,
   onBrowseRooms,
+  onOpenAdmin,
 }: HomeScreenProps) {
+  const isAdmin = user.role === "admin";
+
   return (
     <div className="relative min-h-screen bg-mystery-gradient">
       <div className="pointer-events-none absolute inset-0">
@@ -64,13 +67,23 @@ export function HomeScreen({
             <Sparkles className="h-3 w-3 text-primary" />
             <span>أهلاً، {user.username}</span>
             <span className="text-lg leading-none">{user.avatar}</span>
+            {isAdmin && (
+              <>
+                <span className="text-muted-foreground">·</span>
+                <span className="inline-flex items-center gap-1 text-amber-300">
+                  <Crown className="h-3 w-3" />
+                  أدمن
+                </span>
+              </>
+            )}
           </div>
           <h1 className="bg-gradient-to-b from-foreground via-fuchsia-200 to-foreground/70 bg-clip-text text-4xl font-bold tracking-tight text-transparent sm:text-6xl">
-            ابدأ مغامرتك المجهولة
+            {isAdmin ? "مرحباً بك في لوحة التحكم" : "ابدأ مغامرتك المجهولة"}
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-balance text-muted-foreground sm:text-lg">
-            أنشئ غرفة، ادعُ أصدقاءك بكود سري، واطرحوا أسئلة مجهولة بإجابات لا تكشف
-            صاحبها. كل جولة تنتهي بنقاش جماعي مفتوح.
+            {isAdmin
+              ? "أنشئ غرفة جديدة وادعُ أصدقاءك للعب، أو أدر المستخدمين والصلاحيات."
+              : "ادخل غرفة بكود من أدمن، أو تصفح الغرف المفتوحة."}
           </p>
         </motion.section>
 
@@ -79,22 +92,25 @@ export function HomeScreen({
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
-          className="grid gap-4 sm:grid-cols-3"
+          className={isAdmin ? "grid gap-4 sm:grid-cols-2" : "grid gap-4 sm:grid-cols-2"}
         >
-          <ActionCard
-            icon={<DoorOpen className="h-5 w-5" />}
-            title="إنشاء غرفة"
-            description="ابدأ غرفة جديدة وادعُ من تريد بكود سري."
-            onClick={onCreateRoom}
-            cta="غرفة جديدة"
-            primary
-          />
+          {isAdmin && (
+            <ActionCard
+              icon={<DoorOpen className="h-5 w-5" />}
+              title="إنشاء غرفة"
+              description="ابدأ غرفة جديدة وادعُ من تريد بكود سري."
+              onClick={onCreateRoom}
+              cta="غرفة جديدة"
+              primary
+            />
+          )}
           <ActionCard
             icon={<LogIn className="h-5 w-5" />}
             title="دخول بكود"
-            description="لديك كود من صديق؟ ادخل مباشرة."
+            description="لديك كود من أدمن؟ ادخل مباشرة."
             onClick={onJoinRoom}
             cta="ادخل بكود"
+            primary={!isAdmin}
           />
           <ActionCard
             icon={<Users className="h-5 w-5" />}
@@ -103,7 +119,28 @@ export function HomeScreen({
             onClick={onBrowseRooms}
             cta="تصفح"
           />
+          {isAdmin && onOpenAdmin && (
+            <ActionCard
+              icon={<Shield className="h-5 w-5" />}
+              title="لوحة الأدمن"
+              description="أدر المستخدمين والصلاحيات والإحصائيات."
+              onClick={onOpenAdmin}
+              cta="إدارة"
+            />
+          )}
         </motion.section>
+
+        {!isAdmin && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2 }}
+            className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-center text-xs text-amber-200/80"
+          >
+            <Shield className="ml-1 inline h-3.5 w-3.5" />
+            إنشاء الغرف متاح للأدمن فقط. تواصل مع أدمن للحصول على كود غرفة.
+          </motion.div>
+        )}
 
         {/* Modes preview */}
         <motion.section
@@ -117,14 +154,8 @@ export function HomeScreen({
             أوضاع اللعب
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
-            <ModeCard
-              mode="question_for_all"
-              icon={<HelpCircle className="h-5 w-5" />}
-            />
-            <ModeCard
-              mode="question_for_random"
-              icon={<MessageCircle className="h-5 w-5" />}
-            />
+            <ModeCard mode="question_for_all" icon={<HelpCircle className="h-5 w-5" />} />
+            <ModeCard mode="question_for_random" icon={<MessageCircle className="h-5 w-5" />} />
           </div>
         </motion.section>
 
@@ -138,15 +169,12 @@ export function HomeScreen({
           <h2 className="mb-4 text-xl font-semibold">كيف تعمل الجولة؟</h2>
           <div className="grid gap-3 sm:grid-cols-4">
             {[
-              { n: 1, t: "انتظار", d: "تجمع اللاعبون في اللوبي" },
-              { n: 2, t: "إجابة", d: "تُطرح الأسئلة وتُكتب الإجابات مجهولة" },
-              { n: 3, t: "كشف", d: "تظهر الإجابات بدون أسماء أصحابها" },
-              { n: 4, t: "نقاش", d: "شات جماعي مفتوح لمدة 5 دقائق" },
+              { n: 1, t: "انتظار", d: "تجمع اللاعبون ويضغطون 'جاهز'" },
+              { n: 2, t: "أسئلة", d: "كل لاعب يكتب سؤالاً، يُختار عشوائياً" },
+              { n: 3, t: "إجابات", d: "الجميع يجيب ثم خمّن 'دي إجابة مين؟'" },
+              { n: 4, t: "نقاش", d: "شات جماعي + نتائج الفائز" },
             ].map((s) => (
-              <Card
-                key={s.n}
-                className="border-border/40 bg-card/50 backdrop-blur"
-              >
+              <Card key={s.n} className="border-border/40 bg-card/50 backdrop-blur">
                 <CardContent className="p-4">
                   <div className="mb-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary/15 text-sm font-bold text-primary">
                     {s.n}
@@ -184,7 +212,6 @@ function ActionCard({
         primary ? "bg-primary/10" : "bg-card/50"
       }`}
     >
-      <div className="pointer-events-none absolute -top-12 -left-12 h-32 w-32 rounded-full bg-primary/10 blur-2xl transition-opacity group-hover:opacity-100 opacity-0" />
       <CardHeader>
         <div
           className={`inline-flex h-10 w-10 items-center justify-center rounded-xl ${
@@ -197,11 +224,7 @@ function ActionCard({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>
-        <Button
-          onClick={onClick}
-          variant={primary ? "default" : "secondary"}
-          className="w-full"
-        >
+        <Button onClick={onClick} variant={primary ? "default" : "secondary"} className="w-full">
           {cta}
         </Button>
       </CardContent>
@@ -209,13 +232,7 @@ function ActionCard({
   );
 }
 
-function ModeCard({
-  mode,
-  icon,
-}: {
-  mode: GameMode;
-  icon: React.ReactNode;
-}) {
+function ModeCard({ mode, icon }: { mode: GameMode; icon: React.ReactNode }) {
   return (
     <Card className="border-border/40 bg-card/50 backdrop-blur">
       <CardHeader>
@@ -223,13 +240,9 @@ function ModeCard({
           <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 text-primary">
             {icon}
           </div>
-          <CardTitle className="text-base">
-            {GAME_MODE_LABELS[mode]}
-          </CardTitle>
+          <CardTitle className="text-base">{GAME_MODE_LABELS[mode]}</CardTitle>
         </div>
-        <CardDescription className="pt-2">
-          {GAME_MODE_DESCRIPTIONS[mode]}
-        </CardDescription>
+        <CardDescription className="pt-2">{GAME_MODE_DESCRIPTIONS[mode]}</CardDescription>
       </CardHeader>
     </Card>
   );
