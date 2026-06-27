@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, HelpCircle, Loader2, MessageCircle, Users } from "lucide-react";
+import { ArrowRight, HelpCircle, Loader2, MessageCircle, Sparkles, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
