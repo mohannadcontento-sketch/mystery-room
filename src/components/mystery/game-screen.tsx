@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  CheckCircle2,
   Eye,
   HelpCircle,
   Loader2,
@@ -365,6 +366,26 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
     }
   };
 
+  const handlePickQuestion = async () => {
+    try {
+      const res = await fetch("/api/questions/pick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      toast({ title: "تم اختيار سؤال عشوائي!" });
+      refreshState();
+    } catch (e: any) {
+      toast({
+        title: "تعذّر الاختيار",
+        description: e?.message,
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleAssignRandom = async () => {
     if (assigningTarget) return;
     setAssigningTarget(true);
@@ -516,7 +537,20 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
         <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_360px]">
           {/* Left column: question + answers */}
           <div className="space-y-4">
-            {status === "answering" && (
+            {/* Questioning phase — everyone writes a question */}
+            {status === "questioning" && (
+              <QuestioningCard
+                text={newQuestionText}
+                onText={setNewQuestionText}
+                onSubmit={handleCreateQuestion}
+                submitting={submittingQuestion}
+                myQuestion={questions.find((q) => q.round === 0)}
+                isCreator={isCreator}
+                onPick={() => handlePickQuestion()}
+              />
+            )}
+
+            {status === "answering" && gameMode === "question_for_random" && (
               <AskQuestionCard
                 gameMode={gameMode}
                 isCreator={isCreator}
@@ -625,6 +659,83 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
   );
 }
 
+function QuestioningCard({
+  text,
+  onText,
+  onSubmit,
+  submitting,
+  myQuestion,
+  isCreator,
+  onPick,
+}: {
+  text: string;
+  onText: (v: string) => void;
+  onSubmit: () => void;
+  submitting: boolean;
+  myQuestion?: any;
+  isCreator: boolean;
+  onPick: () => void;
+}) {
+  const hasSubmitted = !!myQuestion;
+  return (
+    <Card className="border-sky-500/30 bg-sky-500/5 backdrop-blur">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Wand2 className="h-4 w-4 text-sky-400" />
+          اكتب سؤالك
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {hasSubmitted ? (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm text-emerald-300">
+              <CheckCircle2 className="h-4 w-4" />
+              تم إرسال سؤالك! بانتظار باقي اللاعبين...
+            </div>
+            <div className="rounded-lg bg-background/40 p-3 text-sm text-muted-foreground">
+              "{myQuestion.questionText}"
+            </div>
+          </div>
+        ) : (
+          <>
+            <Textarea
+              value={text}
+              onChange={(e) => onText(e.target.value)}
+              placeholder="اكتب سؤالاً مثيراً للاهتمام... سيُختار عشوائياً للإجابة"
+              className="bg-background/60 min-h-[80px] resize-none"
+              maxLength={280}
+              disabled={submitting}
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {text.length}/280
+              </span>
+              <Button
+                onClick={onSubmit}
+                disabled={submitting || text.trim().length < 3}
+                size="sm"
+              >
+                {submitting ? (
+                  <Loader2 className="ml-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="ml-1 h-4 w-4" />
+                )}
+                إرسال السؤال
+              </Button>
+            </div>
+          </>
+        )}
+        {isCreator && hasSubmitted && (
+          <Button onClick={onPick} variant="secondary" className="w-full" size="sm">
+            <HelpCircle className="ml-1 h-4 w-4" />
+            اختر سؤالاً عشوائياً الآن
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ScoresCard({
   scores,
   winner,
@@ -730,7 +841,13 @@ function PhaseBanner({
       title: "مرحلة الإجابة",
       icon: <HelpCircle className="h-5 w-5" />,
       color: "from-primary/20 to-fuchsia-500/10",
-      desc: "اطرح سؤالاً واكتب إجاباتك مجهولة",
+      desc: "أجب على السؤال المختار عشوائياً",
+    },
+    questioning: {
+      title: "كتابة الأسئلة",
+      icon: <Wand2 className="h-5 w-5" />,
+      color: "from-sky-500/20 to-cyan-500/10",
+      desc: "كل لاعب يكتب سؤالاً — سيُختار واحد عشوائياً",
     },
     revealing: {
       title: "كشف الإجابات",
@@ -802,18 +919,38 @@ function PhaseBanner({
         )}
 
         {isCreator && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {status === "waiting" && (
               <Button
                 size="sm"
-                onClick={() => onAdvance("answering")}
+                onClick={() => onAdvance("questioning")}
                 className="animate-pulse-glow"
               >
                 <Wand2 className="ml-1 h-4 w-4" />
                 ابدأ الجولة
               </Button>
             )}
+            {status === "questioning" && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onAdvance("answering")}
+              >
+                <HelpCircle className="ml-1 h-4 w-4" />
+                اختر سؤالاً وابدأ الإجابة
+              </Button>
+            )}
             {status === "answering" && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onAdvance("thinking")}
+              >
+                <Sparkles className="ml-1 h-4 w-4" />
+                وقت التفكير
+              </Button>
+            )}
+            {status === "thinking" && (
               <Button
                 size="sm"
                 variant="secondary"
@@ -843,7 +980,7 @@ function PhaseBanner({
               </Button>
             )}
             {status === "finished" && (
-              <Button size="sm" onClick={() => onAdvance("answering")}>
+              <Button size="sm" onClick={() => onAdvance("questioning")}>
                 <RefreshCw className="ml-1 h-4 w-4" />
                 جولة جديدة
               </Button>

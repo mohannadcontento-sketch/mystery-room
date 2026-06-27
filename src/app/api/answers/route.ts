@@ -39,13 +39,21 @@ export async function POST(req: NextRequest) {
     // Check room status
     const { data: room } = await supabase
       .from("rooms")
-      .select("status")
+      .select("status, game_mode")
       .eq("id", question.room_id)
       .maybeSingle();
 
     if (!room || room.status !== "answering") {
       return NextResponse.json(
         { error: "غير مسموح بالإجابة في هذه المرحلة" },
+        { status: 400 },
+      );
+    }
+
+    // In question_for_all mode, only allow answering questions with round > 0 (active)
+    if (room.game_mode === "question_for_all" && question.round === 0) {
+      return NextResponse.json(
+        { error: "هذا السؤال لم يتم اختياره بعد" },
         { status: 400 },
       );
     }

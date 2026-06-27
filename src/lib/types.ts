@@ -4,7 +4,9 @@ export type GameMode = "question_for_all" | "question_for_random";
 
 export type RoomStatus =
   | "waiting"
+  | "questioning"
   | "answering"
+  | "thinking"
   | "revealing"
   | "chatting"
   | "finished";
@@ -77,7 +79,9 @@ export const GAME_MODE_DESCRIPTIONS: Record<GameMode, string> = {
 
 export const ROOM_STATUS_LABELS: Record<RoomStatus, string> = {
   waiting: "في الانتظار",
+  questioning: "كتابة الأسئلة",
   answering: "مرحلة الإجابة",
+  thinking: "وقت التفكير",
   revealing: "كشف الإجابات",
   chatting: "نقاش مباشر",
   finished: "منتهية",

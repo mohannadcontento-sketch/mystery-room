@@ -5,7 +5,7 @@ import { getCurrentUser } from "@/lib/auth";
 
 const schema = z.object({
   roomId: z.string(),
-  status: z.enum(["waiting", "answering", "thinking", "revealing", "chatting", "finished"]),
+  status: z.enum(["waiting", "questioning", "answering", "thinking", "revealing", "chatting", "finished"]),
 });
 
 export async function POST(req: NextRequest) {

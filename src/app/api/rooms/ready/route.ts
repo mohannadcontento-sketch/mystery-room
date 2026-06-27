@@ -74,10 +74,55 @@ export async function POST(req: NextRequest) {
             .update({ ready_at: null })
             .eq("room_id", roomId);
 
-          // Transition to answering
+          // For question_for_all: start with "questioning" phase
+          // For question_for_random: start with "answering" phase
+          // Check if there are pending questions (round=0) to pick from
+          const { data: roomData } = await supabase
+            .from("rooms")
+            .select("game_mode")
+            .eq("id", roomId)
+            .maybeSingle();
+
+          let nextStatus = "answering";
+          if (roomData?.game_mode === "question_for_all") {
+            // Check if there are already pending questions (from a previous questioning phase)
+            const { count: pendingCount } = await supabase
+              .from("questions")
+              .select("id", { count: "exact", head: true })
+              .eq("room_id", roomId)
+              .eq("round", 0);
+
+            if ((pendingCount ?? 0) > 0) {
+              // There are pending questions — pick one and go to answering
+              const { data: pending } = await supabase
+                .from("questions")
+                .select("id")
+                .eq("room_id", roomId)
+                .eq("round", 0);
+
+              if (pending && pending.length > 0) {
+                const picked = pending[Math.floor(Math.random() * pending.length)];
+                const { data: used } = await supabase
+                  .from("questions")
+                  .select("round")
+                  .eq("room_id", roomId)
+                  .gt("round", 0)
+                  .order("round", { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                const nextRound = (used?.round ?? 0) + 1;
+                await supabase.from("questions").update({ round: nextRound }).eq("id", picked.id);
+                nextStatus = "answering";
+              }
+            } else {
+              // No pending questions — go to questioning phase
+              nextStatus = "questioning";
+            }
+          }
+
           await supabase
             .from("rooms")
-            .update({ status: "answering" })
+            .update({ status: nextStatus })
             .eq("id", roomId);
 
           autoStarted = true;

@@ -9,7 +9,42 @@ const schema = z.object({
   targetPlayerId: z.string().optional(),
 });
 
-/** Create a question (sender is hidden from other players). */
+/** Pick a random question from the pool (round=0) and assign it a round number. */
+async function pickRandomQuestion(supabase: any, roomId: string): Promise<string | null> {
+  // Get all pending questions (round = 0)
+  const { data: pending } = await supabase
+    .from("questions")
+    .select("id")
+    .eq("room_id", roomId)
+    .eq("round", 0);
+
+  if (!pending || pending.length === 0) return null;
+
+  // Pick a random one
+  const picked = pending[Math.floor(Math.random() * pending.length)];
+
+  // Get the max round used so far
+  const { data: used } = await supabase
+    .from("questions")
+    .select("round")
+    .eq("room_id", roomId)
+    .gt("round", 0)
+    .order("round", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const nextRound = (used?.round ?? 0) + 1;
+
+  // Assign the round number to the picked question
+  await supabase
+    .from("questions")
+    .update({ round: nextRound })
+    .eq("id", picked.id);
+
+  return picked.id;
+}
+
+/** Create a question. */
 export async function POST(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -20,20 +55,20 @@ export async function POST(req: NextRequest) {
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
-        { error: "بيانات غير صالحة", details: parsed.error.flatten() },
+        { error: "بيانات غير صالحة" },
         { status: 400 },
       );
     }
     const { roomId, questionText, targetPlayerId } = parsed.data;
     const supabase = getSupabase();
 
-    const { data: room, error: roomError } = await supabase
+    const { data: room } = await supabase
       .from("rooms")
       .select("id, status, game_mode")
       .eq("id", roomId)
       .maybeSingle();
 
-    if (roomError || !room) {
+    if (!room) {
       return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
     }
 
@@ -50,74 +85,156 @@ export async function POST(req: NextRequest) {
         { status: 403 },
       );
     }
-    if (room.status !== "answering") {
-      return NextResponse.json(
-        { error: "غير مسموح بإنشاء سؤال في هذه المرحلة" },
-        { status: 400 },
-      );
-    }
 
-    // Determine round number
-    const { data: lastQ } = await supabase
-      .from("questions")
-      .select("round")
-      .eq("room_id", roomId)
-      .order("round", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // === GROUP MODE (question_for_all) ===
+    // Questions are written during "questioning" phase (one per player, round=0)
+    if (room.game_mode === "question_for_all") {
+      if (room.status !== "questioning") {
+        return NextResponse.json(
+          { error: "كتابة الأسئلة متاحة فقط في مرحلة 'كتابة الأسئلة'" },
+          { status: 400 },
+        );
+      }
 
-    const round = lastQ ? lastQ.round + 1 : 1;
-
-    // For question_for_random mode, target_id is the USER_ID of the target
-    // (the API receives targetPlayerId which is room_player.id, we need to convert)
-    let targetUserId: string | null = null;
-    if (targetPlayerId && room.game_mode === "question_for_random") {
-      const { data: targetPlayer } = await supabase
-        .from("room_players")
-        .select("user_id")
-        .eq("id", targetPlayerId)
+      // Check if this player already submitted a question this round (round=0)
+      const { data: existing } = await supabase
+        .from("questions")
+        .select("id")
+        .eq("room_id", roomId)
+        .eq("sender_id", user.id)
+        .eq("round", 0)
         .maybeSingle();
-      targetUserId = targetPlayer?.user_id ?? null;
+
+      if (existing) {
+        return NextResponse.json(
+          { error: "لقد كتبت سؤالك بالفعل. انتظر باقي اللاعبين" },
+          { status: 400 },
+        );
+      }
+
+      // Insert the question with round=0 (pending)
+      const { data: question, error } = await supabase
+        .from("questions")
+        .insert({
+          room_id: roomId,
+          sender_id: user.id,
+          target_id: null,
+          question_text: questionText.trim(),
+          mode: room.game_mode,
+          round: 0,
+        })
+        .select("id, question_text, round, mode, created_at")
+        .single();
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      // Check if ALL players have submitted a question
+      const { count: playerCount } = await supabase
+        .from("room_players")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", roomId);
+
+      const { count: questionCount } = await supabase
+        .from("questions")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", roomId)
+        .eq("round", 0);
+
+      let autoPicked = false;
+      if (questionCount >= playerCount && playerCount >= 2) {
+        // Everyone submitted — auto-pick a random question
+        await pickRandomQuestion(supabase, roomId);
+        await supabase.from("rooms").update({ status: "answering" }).eq("id", roomId);
+        autoPicked = true;
+      }
+
+      return NextResponse.json({
+        question: {
+          id: question.id,
+          questionText: question.question_text,
+          round: question.round,
+          mode: question.mode,
+        },
+        autoPicked,
+        pendingCount: questionCount,
+        playerCount,
+      });
     }
 
-    const { data: question, error: qError } = await supabase
-      .from("questions")
-      .insert({
-        room_id: roomId,
-        sender_id: user.id,
-        target_id: targetUserId,
-        question_text: questionText.trim(),
-        mode: room.game_mode,
-        round,
-      })
-      .select("id, question_text, round, mode, created_at, target_id, sender_id")
-      .single();
+    // === RANDOM MODE (question_for_random) ===
+    // Questions are written during "answering" phase (targeted to a specific player)
+    if (room.game_mode === "question_for_random") {
+      if (room.status !== "answering") {
+        return NextResponse.json(
+          { error: "غير مسموح بإنشاء سؤال في هذه المرحلة" },
+          { status: 400 },
+        );
+      }
 
-    if (qError) {
-      return NextResponse.json({ error: qError.message }, { status: 500 });
+      let targetUserId: string | null = null;
+      if (targetPlayerId) {
+        const { data: targetPlayer } = await supabase
+          .from("room_players")
+          .select("user_id")
+          .eq("id", targetPlayerId)
+          .maybeSingle();
+        targetUserId = targetPlayer?.user_id ?? null;
+      }
+
+      const { data: lastQ } = await supabase
+        .from("questions")
+        .select("round")
+        .eq("room_id", roomId)
+        .order("round", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const round = lastQ ? lastQ.round + 1 : 1;
+
+      const { data: question, error } = await supabase
+        .from("questions")
+        .insert({
+          room_id: roomId,
+          sender_id: user.id,
+          target_id: targetUserId,
+          question_text: questionText.trim(),
+          mode: room.game_mode,
+          round,
+        })
+        .select("id, question_text, round, mode, created_at, target_id, sender_id")
+        .single();
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        question: {
+          id: question.id,
+          questionText: question.question_text,
+          round: question.round,
+          mode: question.mode,
+          targetId: question.target_id,
+          senderId: question.sender_id,
+        },
+      });
     }
 
-    return NextResponse.json({
-      question: {
-        id: question.id,
-        questionText: question.question_text,
-        round: question.round,
-        mode: question.mode,
-        createdAt: question.created_at,
-        targetId: question.target_id,
-        senderId: question.sender_id,
-      },
-    });
+    return NextResponse.json({ error: "وضع لعب غير معروف" }, { status: 400 });
   } catch (e) {
     console.error("[questions/create]", e);
     return NextResponse.json({ error: "حدث خطأ" }, { status: 500 });
   }
 }
 
-/** Get all questions for a room.
- *  - In question_for_all mode: all questions visible to everyone
- *  - In question_for_random mode: a question is visible ONLY to its target
- *    (and to the sender who wrote it) */
+/** Get questions for a room.
+ *  - question_for_all mode:
+ *    - During "questioning": show only your own pending question (round=0)
+ *    - During "answering"+: show only the active question (round > 0)
+ *  - question_for_random mode:
+ *    - A question is visible only to sender + target
+ */
 export async function GET(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -147,10 +264,9 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Get room to know the game mode
     const { data: room } = await supabase
       .from("rooms")
-      .select("game_mode")
+      .select("game_mode, status")
       .eq("id", roomId)
       .maybeSingle();
 
@@ -158,6 +274,75 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
     }
 
+    // === GROUP MODE ===
+    if (room.game_mode === "question_for_all") {
+      // During "questioning": show only your own pending question
+      if (room.status === "questioning") {
+        const { data: myQuestion } = await supabase
+          .from("questions")
+          .select("id, question_text, round, mode, created_at, sender_id")
+          .eq("room_id", roomId)
+          .eq("sender_id", user.id)
+          .eq("round", 0)
+          .maybeSingle();
+
+        // Count how many players have submitted
+        const { count: playerCount } = await supabase
+          .from("room_players")
+          .select("id", { count: "exact", head: true })
+          .eq("room_id", roomId);
+
+        const { count: submittedCount } = await supabase
+          .from("questions")
+          .select("id", { count: "exact", head: true })
+          .eq("room_id", roomId)
+          .eq("round", 0);
+
+        return NextResponse.json({
+          questions: myQuestion
+            ? [{
+                id: myQuestion.id,
+                questionText: myQuestion.question_text,
+                round: myQuestion.round,
+                mode: myQuestion.mode,
+                createdAt: myQuestion.created_at,
+                isMyQuestion: true,
+              }]
+            : [],
+          pendingCount: submittedCount ?? 0,
+          playerCount: playerCount ?? 0,
+          allSubmitted: (submittedCount ?? 0) >= (playerCount ?? 0),
+        });
+      }
+
+      // During "answering"+ : show only the active question (round > 0)
+      const { data: activeQuestions, error } = await supabase
+        .from("questions")
+        .select("id, question_text, round, mode, created_at, target_id, sender_id")
+        .eq("room_id", roomId)
+        .gt("round", 0)
+        .order("round", { ascending: true });
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        questions: (activeQuestions ?? []).map((q) => ({
+          id: q.id,
+          questionText: q.question_text,
+          round: q.round,
+          mode: q.mode,
+          createdAt: q.created_at,
+          targetUserId: q.target_id,
+          senderId: q.sender_id,
+          isMyQuestion: q.sender_id === user.id,
+          isTargetedToMe: q.target_id === user.id,
+        })),
+      });
+    }
+
+    // === RANDOM MODE ===
     const { data: questions, error } = await supabase
       .from("questions")
       .select("id, question_text, round, mode, created_at, target_id, sender_id")
@@ -168,19 +353,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Filter questions based on game mode:
-    // - question_for_all: everyone sees all questions
-    // - question_for_random: a question is visible only to:
-    //   1. The sender (who wrote it)
-    //   2. The target (who it was sent to)
     let visibleQuestions = questions ?? [];
     if (room.game_mode === "question_for_random") {
       visibleQuestions = (questions ?? []).filter((q) => {
-        // Sender can see their own question
         if (q.sender_id === user.id) return true;
-        // Target can see questions sent to them
         if (q.target_id === user.id) return true;
-        // Otherwise hide
         return false;
       });
     }
