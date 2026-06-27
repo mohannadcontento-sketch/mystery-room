@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
 import { getCurrentUser } from "@/lib/auth";
 
 const createSchema = z.object({
@@ -19,33 +19,44 @@ export async function POST(req: NextRequest) {
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(
-        { error: "بيانات غير صالحة", details: parsed.error.flatten() },
+        { error: "بيانات غير صالحة" },
         { status: 400 },
       );
     }
     const { questionId, answerText } = parsed.data;
+    const supabase = getSupabase();
 
-    const question = await db.question.findUnique({
-      where: { id: questionId },
-      include: { room: true },
-    });
+    const { data: question } = await supabase
+      .from("questions")
+      .select("id, room_id")
+      .eq("id", questionId)
+      .maybeSingle();
+
     if (!question) {
       return NextResponse.json({ error: "السؤال غير موجود" }, { status: 404 });
     }
-    if (question.room.status !== "answering") {
+
+    // Check room status
+    const { data: room } = await supabase
+      .from("rooms")
+      .select("status")
+      .eq("id", question.room_id)
+      .maybeSingle();
+
+    if (!room || room.status !== "answering") {
       return NextResponse.json(
         { error: "غير مسموح بالإجابة في هذه المرحلة" },
         { status: 400 },
       );
     }
 
-    // Prevent double-answering
-    const existing = await db.answer.findUnique({
-      where: {
-        questionId_userId: { questionId, userId: user.id },
-      },
-      select: { id: true },
-    }).catch(() => null);
+    // Check for duplicate answer
+    const { data: existing } = await supabase
+      .from("answers")
+      .select("id")
+      .eq("question_id", questionId)
+      .eq("user_id", user.id)
+      .maybeSingle();
 
     if (existing) {
       return NextResponse.json(
@@ -54,20 +65,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const answer = await db.answer.create({
-      data: {
-        questionId,
-        userId: user.id,
-        answerText: answerText.trim(),
-      },
-      select: {
-        id: true,
-        answerText: true,
-        createdAt: true,
-      },
-    });
+    const { data: answer, error } = await supabase
+      .from("answers")
+      .insert({
+        question_id: questionId,
+        user_id: user.id,
+        answer_text: answerText.trim(),
+      })
+      .select("id, answer_text, created_at")
+      .single();
 
-    // IMPORTANT: we never return userId
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
     return NextResponse.json({ answer });
   } catch (e) {
     console.error("[answers/create]", e);
@@ -75,7 +86,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Get all answers for a question — only callable when room is revealing/chatting. */
+/** Get all answers for a question. */
 export async function GET(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -92,47 +103,116 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const question = await db.question.findUnique({
-      where: { id: questionId },
-      include: { room: { include: { players: true } } },
-    });
+    const supabase = getSupabase();
+
+    // Verify membership
+    const { data: question } = await supabase
+      .from("questions")
+      .select("id, room_id, mode, target_id")
+      .eq("id", questionId)
+      .maybeSingle();
+
     if (!question) {
       return NextResponse.json({ error: "السؤال غير موجود" }, { status: 404 });
     }
 
-    const me = question.room.players.find((p) => p.userId === user.id);
-    if (!me) {
+    const { data: membership } = await supabase
+      .from("room_players")
+      .select("id")
+      .eq("room_id", question.room_id)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!membership) {
       return NextResponse.json(
         { error: "أنت لست عضواً في هذه الغرفة" },
         { status: 403 },
       );
     }
 
-    // Only allow fetching answers when room is revealing or chatting or finished
-    if (!["revealing", "chatting", "finished"].includes(question.room.status)) {
-      // While answering, just return count (no text)
-      const count = await db.answer.count({ where: { questionId } });
+    // Check room status — only reveal during revealing/chatting/finished
+    const { data: room } = await supabase
+      .from("rooms")
+      .select("status")
+      .eq("id", question.room_id)
+      .maybeSingle();
+
+    if (!room) {
+      return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
+    }
+
+    // While answering or thinking, return just the count (no text)
+    if (!["revealing", "chatting", "finished"].includes(room.status)) {
+      const { count } = await supabase
+        .from("answers")
+        .select("id", { count: "exact", head: true })
+        .eq("question_id", questionId);
       return NextResponse.json({
         answers: [],
-        count,
+        count: count ?? 0,
         revealed: false,
       });
     }
 
-    const answers = await db.answer.findMany({
-      where: { questionId },
-      orderBy: { createdAt: "asc" },
-      // NOTE: userId intentionally omitted
-      select: {
-        id: true,
-        answerText: true,
-        createdAt: true,
-      },
+    // Get all answers WITH author info (we'll reveal author only after guessing in the frontend)
+    const { data: answers, error } = await supabase
+      .from("answers")
+      .select(
+        "id, answer_text, created_at, votes_count, user_id, profiles!answers_user_id_fkey(username, avatar)",
+      )
+      .eq("question_id", questionId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Get this user's guesses for these answers
+    const answerIds = (answers ?? []).map((a) => a.id);
+    const { data: myGuesses } = await supabase
+      .from("answer_guesses")
+      .select("answer_id, guessed_user_id, is_correct")
+      .in("answer_id", answerIds)
+      .eq("guesser_id", user.id);
+
+    const guessesMap: Record<string, { guessedUserId: string; isCorrect: boolean }> = {};
+    for (const g of myGuesses ?? []) {
+      guessesMap[g.answer_id] = {
+        guessedUserId: g.guessed_user_id,
+        isCorrect: g.is_correct,
+      };
+    }
+
+    // Build response — for each answer, include:
+    // - the answer text
+    // - the author's REAL username + avatar (since we're using real names now)
+    // - whether the current user has guessed, and if so, whether they were correct
+    const formattedAnswers = (answers ?? []).map((a) => {
+      const profile = a.profiles as any;
+      const myGuess = guessesMap[a.id];
+      const isMyAnswer = a.user_id === user.id;
+      return {
+        id: a.id,
+        answerText: a.answer_text,
+        createdAt: a.created_at,
+        votesCount: a.votes_count ?? 0,
+        // Author info: for your own answer, you know it. For others, reveal only after guessing.
+        authorId: isMyAnswer || myGuess ? a.user_id : null,
+        authorUsername: isMyAnswer || myGuess ? profile?.username : null,
+        authorAvatar: isMyAnswer || myGuess ? profile?.avatar : null,
+        isMyAnswer,
+        myGuess: myGuess
+          ? {
+              guessedUserId: myGuess.guessedUserId,
+              isCorrect: myGuess.isCorrect,
+            }
+          : null,
+      };
     });
 
     return NextResponse.json({
-      answers,
-      count: answers.length,
+      answers: formattedAnswers,
+      count: formattedAnswers.length,
       revealed: true,
     });
   } catch (e) {

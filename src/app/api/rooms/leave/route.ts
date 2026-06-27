@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
 import { getCurrentUser } from "@/lib/auth";
 
 const schema = z.object({ roomId: z.string() });
 
-/** Returns room + players (with anonymous names only — real identities stay hidden). */
+/** Returns room + players (with real usernames + avatars). */
 export async function GET(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -19,20 +19,32 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "roomId مطلوب" }, { status: 400 });
     }
 
-    const room = await db.room.findUnique({
-      where: { id: roomId },
-      include: {
-        players: {
-          orderBy: { joinedAt: "asc" },
-        },
-      },
-    });
+    const supabase = getSupabase();
 
-    if (!room) {
+    const { data: room, error: roomError } = await supabase
+      .from("rooms")
+      .select("id, room_code, creator_id, game_mode, status, created_at, real_names_enabled")
+      .eq("id", roomId)
+      .maybeSingle();
+
+    if (roomError || !room) {
       return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
     }
 
-    const me = room.players.find((p) => p.userId === user.id);
+    // Get players with their profile info (real username + avatar)
+    const { data: players, error: playersError } = await supabase
+      .from("room_players")
+      .select(
+        "id, anonymous_name, joined_at, user_id, ready_at, profiles!room_players_user_id_fkey(username, avatar)",
+      )
+      .eq("room_id", roomId)
+      .order("joined_at", { ascending: true });
+
+    if (playersError) {
+      return NextResponse.json({ error: playersError.message }, { status: 500 });
+    }
+
+    const me = (players ?? []).find((p) => p.user_id === user.id);
     if (!me) {
       return NextResponse.json(
         { error: "أنت لست عضواً في هذه الغرفة" },
@@ -40,29 +52,50 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const playersList = players ?? [];
+    const readyCount = playersList.filter((p) => p.ready_at).length;
+    const allReady =
+      playersList.length >= 2 && readyCount === playersList.length;
+
     return NextResponse.json({
       room: {
         id: room.id,
-        roomCode: room.roomCode,
-        gameMode: room.gameMode,
+        roomCode: room.room_code,
+        gameMode: room.game_mode,
         status: room.status,
-        creatorId: room.creatorId,
-        createdAt: room.createdAt,
+        creatorId: room.creator_id,
+        createdAt: room.created_at,
+        realNamesEnabled: room.real_names_enabled,
       },
       me: {
-        anonymousName: me.anonymousName,
-        joinedAt: me.joinedAt,
-        isCreator: room.creatorId === user.id,
+        anonymousName: me.anonymous_name,
+        joinedAt: me.joined_at,
+        isCreator: room.creator_id === user.id,
+        playerId: me.id,
+        readyAt: me.ready_at,
+        isReady: !!me.ready_at,
+        username: user.username,
+        avatar: user.avatar,
       },
-      players: room.players.map((p) => ({
-        // IMPORTANT: we never expose userId here, only the masked identity
-        id: p.id,
-        anonymousName: p.anonymousName,
-        joinedAt: p.joinedAt,
-        isYou: p.userId === user.id,
-        isCreator: room.creatorId === p.userId,
-      })),
-      playersCount: room.players.length,
+      players: playersList.map((p) => {
+        const profile = p.profiles as any;
+        return {
+          id: p.id,
+          anonymousName: p.anonymous_name,
+          // Real username + avatar (now visible to all players)
+          username: profile?.username ?? "مجهول",
+          avatar: profile?.avatar ?? "❓",
+          userId: p.user_id,
+          joinedAt: p.joined_at,
+          readyAt: p.ready_at,
+          isReady: !!p.ready_at,
+          isYou: p.user_id === user.id,
+          isCreator: room.creator_id === p.user_id,
+        };
+      }),
+      playersCount: playersList.length,
+      readyCount,
+      allReady,
     });
   } catch (e) {
     console.error("[rooms/state]", e);
@@ -83,18 +116,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "بيانات غير صالحة" }, { status: 400 });
     }
     const { roomId } = parsed.data;
+    const supabase = getSupabase();
 
-    await db.roomPlayer.deleteMany({
-      where: { roomId, userId: user.id },
-    });
+    const { error } = await supabase
+      .from("room_players")
+      .delete()
+      .eq("room_id", roomId)
+      .eq("user_id", user.id);
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
     // If room has no players left, mark it finished
-    const remaining = await db.roomPlayer.count({ where: { roomId } });
-    if (remaining === 0) {
-      await db.room.update({
-        where: { id: roomId },
-        data: { status: "finished" },
-      });
+    const { count } = await supabase
+      .from("room_players")
+      .select("id", { count: "exact", head: true })
+      .eq("room_id", roomId);
+
+    if ((count ?? 0) === 0) {
+      await supabase
+        .from("rooms")
+        .update({ status: "finished" })
+        .eq("id", roomId);
     }
 
     return NextResponse.json({ ok: true });

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
 import { getCurrentUser } from "@/lib/auth";
 
 const schema = z.object({
   roomId: z.string(),
   questionText: z.string().min(3).max(280),
-  targetPlayerId: z.string().optional(), // for question_for_random
+  targetPlayerId: z.string().optional(),
 });
 
 /** Create a question (sender is hidden from other players). */
@@ -25,16 +25,25 @@ export async function POST(req: NextRequest) {
       );
     }
     const { roomId, questionText, targetPlayerId } = parsed.data;
+    const supabase = getSupabase();
 
-    const room = await db.room.findUnique({
-      where: { id: roomId },
-      include: { players: true },
-    });
-    if (!room) {
+    const { data: room, error: roomError } = await supabase
+      .from("rooms")
+      .select("id, status, game_mode")
+      .eq("id", roomId)
+      .maybeSingle();
+
+    if (roomError || !room) {
       return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
     }
 
-    const me = room.players.find((p) => p.userId === user.id);
+    const { data: me } = await supabase
+      .from("room_players")
+      .select("id, user_id")
+      .eq("room_id", roomId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
     if (!me) {
       return NextResponse.json(
         { error: "أنت لست عضواً في هذه الغرفة" },
@@ -49,42 +58,54 @@ export async function POST(req: NextRequest) {
     }
 
     // Determine round number
-    const lastQuestion = await db.question.findFirst({
-      where: { roomId },
-      orderBy: { round: "desc" },
-      select: { round: true },
-    });
-    const round = lastQuestion ? lastQuestion.round + 1 : 1;
+    const { data: lastQ } = await supabase
+      .from("questions")
+      .select("round")
+      .eq("room_id", roomId)
+      .order("round", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    const question = await db.question.create({
-      data: {
-        roomId,
-        senderId: user.id,
-        targetId: targetPlayerId ?? null,
-        questionText: questionText.trim(),
-        mode: room.gameMode,
+    const round = lastQ ? lastQ.round + 1 : 1;
+
+    // For question_for_random mode, target_id is the USER_ID of the target
+    // (the API receives targetPlayerId which is room_player.id, we need to convert)
+    let targetUserId: string | null = null;
+    if (targetPlayerId && room.game_mode === "question_for_random") {
+      const { data: targetPlayer } = await supabase
+        .from("room_players")
+        .select("user_id")
+        .eq("id", targetPlayerId)
+        .maybeSingle();
+      targetUserId = targetPlayer?.user_id ?? null;
+    }
+
+    const { data: question, error: qError } = await supabase
+      .from("questions")
+      .insert({
+        room_id: roomId,
+        sender_id: user.id,
+        target_id: targetUserId,
+        question_text: questionText.trim(),
+        mode: room.game_mode,
         round,
-      },
-      select: {
-        id: true,
-        questionText: true,
-        round: true,
-        mode: true,
-        createdAt: true,
-        targetId: true,
-      },
-    });
+      })
+      .select("id, question_text, round, mode, created_at, target_id, sender_id")
+      .single();
 
-    // We NEVER return senderId — keep anonymity.
+    if (qError) {
+      return NextResponse.json({ error: qError.message }, { status: 500 });
+    }
+
     return NextResponse.json({
       question: {
         id: question.id,
-        questionText: question.questionText,
+        questionText: question.question_text,
         round: question.round,
         mode: question.mode,
-        createdAt: question.createdAt,
-        // target is the room_player.id (not the user_id), used by frontend only for matching
-        targetPlayerId: question.targetId,
+        createdAt: question.created_at,
+        targetId: question.target_id,
+        senderId: question.sender_id,
       },
     });
   } catch (e) {
@@ -93,7 +114,10 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Get all questions for a room (sender_id hidden). */
+/** Get all questions for a room.
+ *  - In question_for_all mode: all questions visible to everyone
+ *  - In question_for_random mode: a question is visible ONLY to its target
+ *    (and to the sender who wrote it) */
 export async function GET(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -107,9 +131,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "roomId مطلوب" }, { status: 400 });
     }
 
-    const membership = await db.roomPlayer.findFirst({
-      where: { roomId, userId: user.id },
-    });
+    const supabase = getSupabase();
+
+    const { data: membership } = await supabase
+      .from("room_players")
+      .select("id")
+      .eq("room_id", roomId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
     if (!membership) {
       return NextResponse.json(
         { error: "أنت لست عضواً في هذه الغرفة" },
@@ -117,30 +147,55 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const questions = await db.question.findMany({
-      where: { roomId },
-      orderBy: { createdAt: "asc" },
-      select: {
-        id: true,
-        questionText: true,
-        round: true,
-        mode: true,
-        createdAt: true,
-        targetId: true,
-        // NOTE: senderId intentionally omitted
-      },
-    });
+    // Get room to know the game mode
+    const { data: room } = await supabase
+      .from("rooms")
+      .select("game_mode")
+      .eq("id", roomId)
+      .maybeSingle();
+
+    if (!room) {
+      return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
+    }
+
+    const { data: questions, error } = await supabase
+      .from("questions")
+      .select("id, question_text, round, mode, created_at, target_id, sender_id")
+      .eq("room_id", roomId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Filter questions based on game mode:
+    // - question_for_all: everyone sees all questions
+    // - question_for_random: a question is visible only to:
+    //   1. The sender (who wrote it)
+    //   2. The target (who it was sent to)
+    let visibleQuestions = questions ?? [];
+    if (room.game_mode === "question_for_random") {
+      visibleQuestions = (questions ?? []).filter((q) => {
+        // Sender can see their own question
+        if (q.sender_id === user.id) return true;
+        // Target can see questions sent to them
+        if (q.target_id === user.id) return true;
+        // Otherwise hide
+        return false;
+      });
+    }
 
     return NextResponse.json({
-      questions: questions.map((q) => ({
+      questions: visibleQuestions.map((q) => ({
         id: q.id,
-        questionText: q.questionText,
+        questionText: q.question_text,
         round: q.round,
         mode: q.mode,
-        createdAt: q.createdAt,
-        // For random mode: hide target identity except from the assigned target.
-        // The socket layer will mask this further if needed.
-        targetPlayerId: q.targetId,
+        createdAt: q.created_at,
+        targetUserId: q.target_id,
+        senderId: q.sender_id,
+        isMyQuestion: q.sender_id === user.id,
+        isTargetedToMe: q.target_id === user.id,
       })),
     });
   } catch (e) {

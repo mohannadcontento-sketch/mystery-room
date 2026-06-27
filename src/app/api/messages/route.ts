@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getSupabase } from "@/lib/supabase";
 import { getCurrentUser } from "@/lib/auth";
 
 const createSchema = z.object({
@@ -8,7 +8,7 @@ const createSchema = z.object({
   message: z.string().min(1).max(500),
 });
 
-/** Persist a chat message — uses the player's anonymous name, never the real identity. */
+/** Persist a chat message. Uses real username now (not anonymous). */
 export async function POST(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -18,16 +18,18 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { error: "بيانات غير صالحة" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "بيانات غير صالحة" }, { status: 400 });
     }
     const { roomId, message } = parsed.data;
+    const supabase = getSupabase();
 
-    const membership = await db.roomPlayer.findFirst({
-      where: { roomId, userId: user.id },
-    });
+    const { data: membership } = await supabase
+      .from("room_players")
+      .select("id, anonymous_name")
+      .eq("room_id", roomId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
     if (!membership) {
       return NextResponse.json(
         { error: "أنت لست عضواً في هذه الغرفة" },
@@ -35,35 +37,43 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Make sure the room is in chatting/revealing state
-    const room = await db.room.findUnique({
-      where: { id: roomId },
-      select: { status: true },
-    });
+    const { data: room } = await supabase
+      .from("rooms")
+      .select("status")
+      .eq("id", roomId)
+      .maybeSingle();
+
     if (!room) {
       return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
     }
-    if (!["chatting", "revealing", "answering", "waiting"].includes(room.status)) {
+    if (room.status === "finished") {
       return NextResponse.json(
         { error: "الشات غير متاح في هذه المرحلة" },
         { status: 400 },
       );
     }
 
-    const msg = await db.message.create({
-      data: {
-        roomId,
-        anonymousUser: membership.anonymousName,
+    // Store the REAL username (not anonymous) so everyone knows who's talking
+    const { data: msg, error } = await supabase
+      .from("messages")
+      .insert({
+        room_id: roomId,
+        anonymous_user: user.username, // Now using real username
         message: message.trim(),
-      },
-    });
+      })
+      .select("id, anonymous_user, message, created_at")
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
     return NextResponse.json({
       message: {
         id: msg.id,
-        anonymousUser: msg.anonymousUser,
+        anonymousUser: msg.anonymous_user, // Now contains real username
         message: msg.message,
-        createdAt: msg.createdAt,
+        createdAt: msg.created_at,
         mine: true,
       },
     });
@@ -87,9 +97,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "roomId مطلوب" }, { status: 400 });
     }
 
-    const membership = await db.roomPlayer.findFirst({
-      where: { roomId, userId: user.id },
-    });
+    const supabase = getSupabase();
+
+    const { data: membership } = await supabase
+      .from("room_players")
+      .select("id, anonymous_name")
+      .eq("room_id", roomId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
     if (!membership) {
       return NextResponse.json(
         { error: "أنت لست عضواً في هذه الغرفة" },
@@ -97,19 +113,26 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const messages = await db.message.findMany({
-      where: { roomId },
-      orderBy: { createdAt: "asc" },
-      take: 200,
-    });
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select("id, anonymous_user, message, created_at")
+      .eq("room_id", roomId)
+      .order("created_at", { ascending: true })
+      .limit(200);
 
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Now anonymous_user contains the real username
+    // We mark "mine" by comparing with the current user's username
     return NextResponse.json({
-      messages: messages.map((m) => ({
+      messages: (messages ?? []).map((m) => ({
         id: m.id,
-        anonymousUser: m.anonymousUser,
+        anonymousUser: m.anonymous_user, // Now real username
         message: m.message,
-        createdAt: m.createdAt,
-        mine: m.anonymousUser === membership.anonymousName,
+        createdAt: m.created_at,
+        mine: m.anonymous_user === user.username,
       })),
     });
   } catch (e) {

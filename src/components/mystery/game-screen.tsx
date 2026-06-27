@@ -12,6 +12,7 @@ import {
   Send,
   Sparkles,
   Target,
+  Trophy,
   Users,
   Wand2,
 } from "lucide-react";
@@ -91,6 +92,10 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
   const [newQuestionText, setNewQuestionText] = useState("");
   const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
   const [state, setState] = useState<GameState | null>(null);
+  const [myGuesses, setMyGuesses] = useState<Record<string, { guessedUserId: string; isCorrect: boolean }>>({});
+  const [guessing, setGuessing] = useState<string | null>(null);
+  const [scores, setScores] = useState<Array<any>>([]);
+  const [winner, setWinner] = useState<any>(null);
   const { toast } = useToast();
 
   // Poll game state every 2s
@@ -122,6 +127,91 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
       }
     }
   }, [stateData]);
+
+  // Poll guesses (during revealing/chatting/finished)
+  useEffect(() => {
+    if (!state?.room) return;
+    const status = state.room.status;
+    if (!["revealing", "chatting", "finished"].includes(status)) return;
+    let cancelled = false;
+    const fetchGuesses = async () => {
+      try {
+        const res = await fetch(`/api/guess?roomId=${roomId}`);
+        if (!res.ok) return;
+        const d = await res.json();
+        if (cancelled) return;
+        setMyGuesses(d.guesses ?? {});
+      } catch {}
+    };
+    fetchGuesses();
+    const id = setInterval(fetchGuesses, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [state?.room?.status, roomId, state?.room]);
+
+  // Poll scores (during revealing/chatting/finished)
+  useEffect(() => {
+    if (!state?.room) return;
+    const status = state.room.status;
+    if (!["revealing", "chatting", "finished"].includes(status)) return;
+    let cancelled = false;
+    const fetchScores = async () => {
+      try {
+        const res = await fetch(`/api/scores?roomId=${roomId}`);
+        if (!res.ok) return;
+        const d = await res.json();
+        if (cancelled) return;
+        setScores(d.scores ?? []);
+        setWinner(d.winner ?? null);
+      } catch {}
+    };
+    fetchScores();
+    const id = setInterval(fetchScores, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [state?.room?.status, roomId, state?.room]);
+
+  const handleGuess = async (answerId: string, guessedUserId: string) => {
+    if (guessing) return;
+    setGuessing(answerId);
+    try {
+      const res = await fetch("/api/guess", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answerId, roomId, guessedUserId }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      if (d.guessed) {
+        setMyGuesses((prev) => ({
+          ...prev,
+          [answerId]: {
+            guessedUserId,
+            isCorrect: d.isCorrect,
+          },
+        }));
+        toast({
+          title: d.isCorrect ? "🎉 توقع صحيح!" : "❌ توقع خاطئ",
+          description: d.isCorrect
+            ? "أحسنت! كسبت نقطة"
+            : "حظ أوفر في المرة القادمة",
+        });
+      } else {
+        setMyGuesses((prev) => {
+          const next = { ...prev };
+          delete next[answerId];
+          return next;
+        });
+        toast({ title: "تم إلغاء التوقع" });
+      }
+    } catch (e: any) {
+      toast({
+        title: "تعذّر التوقع",
+        description: e?.message,
+        variant: "destructive",
+      });
+    } finally {
+      setGuessing(null);
+    }
+  };
 
   // Poll questions every 2s
   const fetchQuestions = useCallback(async () => {
@@ -457,6 +547,10 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
                 onSubmitAnswer={() => handleSubmitAnswer(currentQuestion.id)}
                 submitting={submittingAnswer}
                 myPlayerId={myPlayerId}
+                players={state.players}
+                myGuesses={myGuesses}
+                onGuess={handleGuess}
+                guessing={guessing}
               />
             ) : (
               status === "answering" && (
@@ -504,24 +598,107 @@ export function GameScreen({ user, roomId, onLeave }: GameScreenProps) {
             )}
           </div>
 
-          {/* Right column: players + chat */}
-          <div className="space-y-4">
-            <PlayersCard
-              players={state.players}
-              myAnonymousName={myAnonymousName}
-              playersCount={state.playersCount}
-            />
+          {/* Scores leaderboard — shown during revealing/chatting/finished */}
+          {(status === "revealing" || status === "chatting" || status === "finished") &&
+            scores.length > 0 && (
+              <ScoresCard scores={scores} winner={winner} />
+            )}
+        </div>
 
-            <ChatPanel
-              roomId={roomId}
-              anonymousName={myAnonymousName}
-              enabled
-              className="h-[500px]"
+        {/* Right column: players + chat */}
+        <div className="space-y-4">
+          <PlayersCard
+            players={state.players}
+            myAnonymousName={myAnonymousName}
+            playersCount={state.playersCount}
+          />
+
+          <ChatPanel
+            roomId={roomId}
+            anonymousName={myAnonymousName}
+            enabled
+            className="h-[500px]"
             />
-          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function ScoresCard({
+  scores,
+  winner,
+}: {
+  scores: any[];
+  winner: any;
+}) {
+  return (
+    <Card className="border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-card/40 backdrop-blur">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Trophy className="h-4 w-4 text-amber-400" />
+          النتائج
+          <Badge variant="secondary" className="ml-auto">
+            {scores.length} لاعبين
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {winner && (
+          <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/15 p-3 text-center">
+            <div className="text-xs text-amber-300">🏆 الفائز</div>
+            <div className="mt-1 text-lg font-bold">
+              {winner.avatar} {winner.username}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {winner.correctGuesses} توقعات صحيحة
+            </div>
+          </div>
+        )}
+        {scores.map((s, idx) => (
+          <div
+            key={s.userId}
+            className={cn(
+              "flex items-center gap-3 rounded-xl border p-2",
+              s.isYou
+                ? "border-primary/60 bg-primary/5"
+                : "border-border/40 bg-background/40",
+            )}
+          >
+            <div className="w-6 text-center text-sm font-bold text-muted-foreground">
+              {idx + 1}
+            </div>
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="bg-secondary text-sm">
+                {s.avatar}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex-1">
+              <div className="text-sm font-medium">
+                {s.username}
+                {s.isYou && (
+                  <span className="text-xs text-muted-foreground"> (أنت)</span>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {s.correctGuesses} / {s.totalGuesses} صحيح
+              </div>
+            </div>
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-xs",
+                s.correctGuesses > 0
+                  ? "border-amber-500/40 text-amber-300"
+                  : "text-muted-foreground",
+              )}
+            >
+              {s.correctGuesses} نقطة
+            </Badge>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -793,22 +970,34 @@ function QuestionCard({
   onSubmitAnswer,
   submitting,
   myPlayerId,
+  players,
+  myGuesses,
+  onGuess,
+  guessing,
 }: {
-  question: Question;
+  question: any;
   status: string;
   answerCount: number;
-  answers: Answer[];
+  answers: any[];
   myAnswered: boolean;
   draft: string;
   onDraft: (v: string) => void;
   onSubmitAnswer: () => void;
   submitting: boolean;
   myPlayerId?: string;
+  players: any[];
+  myGuesses: Record<string, { guessedUserId: string; isCorrect: boolean }>;
+  onGuess: (answerId: string, guessedUserId: string) => void;
+  guessing: string | null;
 }) {
-  const isTargetedToMe =
-    question.targetPlayerId && question.targetPlayerId === myPlayerId;
-  const canAnswer = status === "answering" && !myAnswered;
+  const isTargetedToMe = question.isTargetedToMe;
+  const isMyQuestion = question.isMyQuestion;
+  const canAnswer = status === "answering" && !myAnswered && (question.mode !== "question_for_random" || isTargetedToMe);
   const showAnswers = status === "revealing" || status === "chatting" || status === "finished";
+  const canGuess = showAnswers;
+
+  // Players available for guessing (exclude current user)
+  const guessablePlayers = players.filter((p) => !p.isYou);
 
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur bg-card-glow">
@@ -819,10 +1008,17 @@ function QuestionCard({
               <HelpCircle className="h-4 w-4" />
             </div>
             <div>
-              <CardTitle className="text-base">سؤال مجهول</CardTitle>
+              <CardTitle className="text-base">
+                {question.mode === "question_for_random" && isTargetedToMe
+                  ? "سؤال موجّه إليك"
+                  : question.mode === "question_for_random" && isMyQuestion
+                    ? "سؤالك (لشخص مجهول)"
+                    : "سؤال مجهول"}
+              </CardTitle>
               <div className="text-xs text-muted-foreground">
                 جولة {question.round}
                 {isTargetedToMe && " · موجّه إليك"}
+                {isMyQuestion && " · أنت من أرسله"}
               </div>
             </div>
           </div>
@@ -877,8 +1073,15 @@ function QuestionCard({
 
         {showAnswers && (
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-muted-foreground">
-              الإجابات ({answers.length})
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-muted-foreground">
+                الإجابات ({answers.length})
+              </div>
+              {canGuess && answers.length > 0 && (
+                <div className="text-xs text-amber-300">
+                  🤔 خمّن: دي إجابة مين؟
+                </div>
+              )}
             </div>
             {answers.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border/40 p-4 text-center text-sm text-muted-foreground">
@@ -886,25 +1089,113 @@ function QuestionCard({
               </div>
             ) : (
               <AnimatePresence>
-                {answers.map((a, idx) => (
-                  <motion.div
-                    key={a.id}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: idx * 0.05 }}
-                    className="rounded-xl border border-border/40 bg-secondary/30 p-3"
-                  >
-                    <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-                      <Avatar className="h-6 w-6">
-                        <AvatarFallback className="bg-primary/15 text-[10px]">
-                          ?
-                        </AvatarFallback>
-                      </Avatar>
-                      لاعب مجهول
-                    </div>
-                    <div className="text-sm">{a.answerText}</div>
-                  </motion.div>
-                ))}
+                {answers.map((a, idx) => {
+                  const myGuess = myGuesses[a.id];
+                  const hasGuessed = !!myGuess;
+                  const isMyAnswer = a.isMyAnswer;
+                  const isGuessing = guessing === a.id;
+
+                  // Author info: revealed only after guessing (or for own answer)
+                  const authorRevealed = isMyAnswer || hasGuessed;
+                  const authorUsername = a.authorUsername;
+                  const authorAvatar = a.authorAvatar;
+
+                  return (
+                    <motion.div
+                      key={a.id}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: idx * 0.05 }}
+                      className={cn(
+                        "rounded-xl border p-3 transition-all",
+                        hasGuessed && myGuess.isCorrect
+                          ? "border-emerald-500/50 bg-emerald-500/10"
+                          : hasGuessed && !myGuess.isCorrect
+                            ? "border-rose-500/50 bg-rose-500/10"
+                            : "border-border/40 bg-secondary/30",
+                      )}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-xs">
+                          <Avatar className="h-6 w-6">
+                            <AvatarFallback className="bg-primary/15 text-[10px]">
+                              {authorRevealed ? authorAvatar : "?"}
+                            </AvatarFallback>
+                          </Avatar>
+                          {authorRevealed ? (
+                            <span className="font-medium">
+                              {authorUsername}
+                              {isMyAnswer && (
+                                <span className="text-muted-foreground"> (أنت)</span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">لاعب مجهول</span>
+                          )}
+                        </div>
+                        {hasGuessed && (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[10px]",
+                              myGuess.isCorrect
+                                ? "border-emerald-500/40 text-emerald-300"
+                                : "border-rose-500/40 text-rose-300",
+                            )}
+                          >
+                            {myGuess.isCorrect ? "✓ صحيح" : "✗ خاطئ"}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mb-2 text-sm">
+                        {a.answerText || a.answer_text}
+                      </div>
+
+                      {/* Guess buttons — only show if not own answer and not yet guessed */}
+                      {canGuess && !isMyAnswer && !hasGuessed && (
+                        <div className="mt-2 border-t border-border/30 pt-2">
+                          <div className="mb-1.5 text-[10px] font-medium text-muted-foreground">
+                            🤔 خمّن: دي إجابة مين؟
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {guessablePlayers.map((p) => (
+                              <Button
+                                key={p.id}
+                                size="sm"
+                                variant="outline"
+                                onClick={() => onGuess(a.id, p.userId)}
+                                disabled={isGuessing}
+                                className="h-7 px-2 text-xs"
+                              >
+                                {isGuessing ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <>
+                                    <span className="ml-1">{p.avatar}</span>
+                                    {p.username}
+                                  </>
+                                )}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* After guessing: show who you guessed */}
+                      {hasGuessed && !isMyAnswer && (
+                        <div className="mt-2 border-t border-border/30 pt-2 text-[10px] text-muted-foreground">
+                          توقعت:{" "}
+                          {(() => {
+                            const guessed = players.find(
+                              (p) => p.userId === myGuess.guessedUserId,
+                            );
+                            return guessed ? `${guessed.avatar} ${guessed.username}` : "مجهول";
+                          })()}
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
               </AnimatePresence>
             )}
           </div>
