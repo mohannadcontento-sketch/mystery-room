@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     }
 
     // For each player, count their correct guesses in this room
-    const scores = [];
+    const scores: any[] = [];
     for (const p of players ?? []) {
       const { count: correctInRoom } = await supabase
         .from("answer_guesses")
