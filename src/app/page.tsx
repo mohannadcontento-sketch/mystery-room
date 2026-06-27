@@ -10,6 +10,7 @@ import { CreateRoomScreen } from "@/components/mystery/create-room-screen";
 import { JoinRoomScreen } from "@/components/mystery/join-room-screen";
 import { LobbyScreen } from "@/components/mystery/lobby-screen";
 import { GameScreen } from "@/components/mystery/game-screen";
+import { AdminPanel } from "@/components/mystery/admin/admin-panel";
 import type { Profile } from "@/lib/types";
 
 type View =
@@ -17,7 +18,8 @@ type View =
   | { name: "create" }
   | { name: "join"; code?: string }
   | { name: "lobby"; roomId: string }
-  | { name: "game"; roomId: string };
+  | { name: "game"; roomId: string }
+  | { name: "admin" };
 
 export default function Home() {
   const { user, loading, login, register, logout } = useAuth();
@@ -119,6 +121,13 @@ export default function Home() {
               user={user}
               roomId={view.roomId}
               onLeave={() => setView({ name: "home" })}
+            />
+          )}
+
+          {view.name === "admin" && user.role === "admin" && (
+            <AdminPanel
+              user={user}
+              onBack={() => setView({ name: "home" })}
             />
           )}
         </motion.div>
