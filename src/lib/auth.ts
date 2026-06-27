@@ -106,6 +106,13 @@ export async function getCurrentUser() {
   };
 }
 
+/** Check if the current user is an admin. Returns the user if admin, null otherwise. */
+export async function requireAdmin() {
+  const user = await getCurrentUser();
+  if (!user || user.role !== "admin") return null;
+  return user;
+}
+
 /**
  * Anonymous name generator — used to mask a player's identity inside a room.
  * Names follow a "Adjective Noun" pattern and never reuse the same noun
