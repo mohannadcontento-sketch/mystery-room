@@ -1,6 +1,6 @@
 // Shared types between frontend and backend.
 
-export type GameMode = "question_for_all" | "question_for_random";
+export type GameMode = "question_for_all" | "question_for_random" | "autocomplete_battle";
 
 export type RoomStatus =
   | "waiting"
@@ -68,13 +68,16 @@ export const AVATAR_OPTIONS = [
 export const GAME_MODE_LABELS: Record<GameMode, string> = {
   question_for_all: "سؤال للجميع",
   question_for_random: "سؤال لشخص عشوائي",
+  autocomplete_battle: "اتوبيس كومبليت",
 };
 
 export const GAME_MODE_DESCRIPTIONS: Record<GameMode, string> = {
   question_for_all:
-    "أي لاعب يستطيع إنشاء سؤال، والجميع يكتب إجابات مجهولة، ثم تناقشون لمدة 5 دقائق.",
+    "كل لاعب يكتب سؤالاً، يُختار عشوائياً، والجميع يجيب ثم خمّن صاحب الإجابة.",
   question_for_random:
     "النظام يختار لاعباً عشوائياً لك، ترسل له سؤالاً مجهولاً، وتتلقى إجابة مجهولة.",
+  autocomplete_battle:
+    "أكمل الجملة بأسرع ما يمكن! استخدم الصوت أو الكتابة. الأسرع والأكثر إبداعاً يفوز.",
 };
 
 export const ROOM_STATUS_LABELS: Record<RoomStatus, string> = {

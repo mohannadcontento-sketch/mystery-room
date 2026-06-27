@@ -10,15 +10,16 @@ import { CreateRoomScreen } from "@/components/mystery/create-room-screen";
 import { JoinRoomScreen } from "@/components/mystery/join-room-screen";
 import { LobbyScreen } from "@/components/mystery/lobby-screen";
 import { GameScreen } from "@/components/mystery/game-screen";
+import { AutocompleteGameScreen } from "@/components/mystery/autocomplete-game-screen";
 import { AdminPanel } from "@/components/mystery/admin/admin-panel";
-import type { Profile } from "@/lib/types";
+import type { GameMode, Profile } from "@/lib/types";
 
 type View =
   | { name: "home" }
   | { name: "create" }
   | { name: "join"; code?: string }
-  | { name: "lobby"; roomId: string }
-  | { name: "game"; roomId: string }
+  | { name: "lobby"; roomId: string; gameMode?: GameMode }
+  | { name: "game"; roomId: string; gameMode?: GameMode }
   | { name: "admin" };
 
 export default function Home() {
@@ -94,7 +95,7 @@ export default function Home() {
             <CreateRoomScreen
               user={user}
               onBack={() => setView({ name: "home" })}
-              onCreated={(roomId) => setView({ name: "lobby", roomId })}
+              onCreated={(roomId, gameMode) => setView({ name: "lobby", roomId, gameMode })}
             />
           )}
 
@@ -112,16 +113,24 @@ export default function Home() {
               user={user}
               roomId={view.roomId}
               onLeave={() => setView({ name: "home" })}
-              onStart={() => setView({ name: "game", roomId: view.roomId })}
+              onStart={() => setView({ name: "game", roomId: view.roomId, gameMode: view.gameMode })}
             />
           )}
 
           {view.name === "game" && (
-            <GameScreen
-              user={user}
-              roomId={view.roomId}
-              onLeave={() => setView({ name: "home" })}
-            />
+            view.gameMode === "autocomplete_battle" ? (
+              <AutocompleteGameScreen
+                user={user}
+                roomId={view.roomId}
+                onLeave={() => setView({ name: "home" })}
+              />
+            ) : (
+              <GameScreen
+                user={user}
+                roomId={view.roomId}
+                onLeave={() => setView({ name: "home" })}
+              />
+            )
           )}
 
           {view.name === "admin" && user.role === "admin" && (

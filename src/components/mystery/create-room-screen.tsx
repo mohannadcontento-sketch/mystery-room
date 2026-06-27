@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 interface CreateRoomScreenProps {
   user: Profile;
   onBack: () => void;
-  onCreated: (roomId: string) => void;
+  onCreated: (roomId: string, gameMode: GameMode) => void;
 }
 
 export function CreateRoomScreen({
@@ -50,7 +50,7 @@ export function CreateRoomScreen({
         title: "تم إنشاء الغرفة",
         description: `كود الغرفة: ${data.room.roomCode}`,
       });
-      onCreated(data.room.id);
+      onCreated(data.room.id, mode);
     } catch (err: any) {
       toast({
         title: "خطأ",

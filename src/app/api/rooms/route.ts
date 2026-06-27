@@ -4,7 +4,7 @@ import { getSupabase } from "@/lib/supabase";
 import { getCurrentUser, generateAnonymousName, generateRoomCode } from "@/lib/auth";
 
 const createSchema = z.object({
-  gameMode: z.enum(["question_for_all", "question_for_random"]),
+  gameMode: z.enum(["question_for_all", "question_for_random", "autocomplete_battle"]),
 });
 
 export async function POST(req: NextRequest) {
