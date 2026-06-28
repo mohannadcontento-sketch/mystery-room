@@ -3,27 +3,15 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  CheckCircle2,
-  Crown,
-  Eye,
-  Loader2,
-  LogOut,
-  Mic,
-  MicOff,
-  RefreshCw,
-  Send,
-  Sparkles,
-  Timer,
-  Trophy,
-  Users,
-  Volume2,
-  Wand2,
+  Check, CheckCircle2, Eye, Loader2, LogOut, Mic, MicOff,
+  RefreshCw, Send, Sparkles, Timer, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { CountdownTimer } from "./countdown-timer";
 import { ChatPanel } from "./chat-panel";
 import { usePolling } from "@/hooks/use-polling";
@@ -37,219 +25,124 @@ interface AutocompleteGameScreenProps {
   onLeave: () => void;
 }
 
-interface RoundInfo {
-  id: string;
-  phrase: string;
-  roundNumber: number;
-  timeLimit: number;
-  createdAt: string;
-}
+const CATEGORIES = [
+  { key: "boy_name", label: "ولد", icon: "👦", placeholder: "اسم ولد" },
+  { key: "girl_name", label: "بنت", icon: "👧", placeholder: "اسم بنت" },
+  { key: "animal", label: "حيوان", icon: "🦁", placeholder: "اسم حيوان" },
+  { key: "country", label: "بلاد", icon: "🌍", placeholder: "اسم بلد" },
+  { key: "plant", label: "نبات", icon: "🌱", placeholder: "اسم نبات" },
+] as const;
 
-interface AnswerInfo {
-  id: string;
-  answerText: string;
-  usedVoice: boolean;
-  responseTimeMs?: number;
-  username?: string;
-  avatar?: string;
-  isMine?: boolean;
-}
-
-interface AutocompleteData {
-  round: RoundInfo | null;
-  myAnswer: AnswerInfo | null;
-  answers: AnswerInfo[];
-  answersCount?: number;
-  playersCount?: number;
-  revealed: boolean;
-}
-
-const ROUND_DURATION = 30;
-
-// TypeScript declarations for Web Speech API
-declare global {
-  interface Window {
-    SpeechRecognition: any;
-    webkitSpeechRecognition: any;
-  }
-}
+const ROUND_DURATION = 60;
 
 export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGameScreenProps) {
-  const [data, setData] = useState<AutocompleteData | null>(null);
-  const [answerText, setAnswerText] = useState("");
+  const [data, setData] = useState<any>(null);
+  const [answers, setAnswers] = useState({ boy_name: "", girl_name: "", animal: "", country: "", plant: "" });
   const [submitting, setSubmitting] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [roomStatus, setRoomStatus] = useState("waiting");
-  const [isCreator, setIsCreator] = useState(false);
-  const recognitionRef = useRef<any>(null);
+  const [scores, setScores] = useState<Record<string, number>>({});
   const { toast } = useToast();
 
-  // Poll room state
-  const fetchState = useCallback(async () => {
-    const res = await fetch(`/api/rooms/leave?roomId=${roomId}`);
-    const d = await res.json();
-    if (res.ok) {
-      setRoomStatus(d.room.status);
-      setIsCreator(d.me.isCreator);
-    }
-    return d;
-  }, [roomId]);
-
-  usePolling({ fetcher: fetchState, intervalMs: 1500 });
-
-  // Poll autocomplete data
-  const fetchAutocomplete = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     const res = await fetch(`/api/autocomplete?roomId=${roomId}`);
     if (!res.ok) return null;
-    const d = await res.json();
-    return d as AutocompleteData;
+    return await res.json();
   }, [roomId]);
 
-  const { data: acData, refresh } = usePolling({
-    fetcher: fetchAutocomplete,
-    intervalMs: 1000,
-  });
+  const { data: polled, refresh } = usePolling({ fetcher: fetchData, intervalMs: 1500 });
 
   useEffect(() => {
-    if (acData) {
-      setData(acData);
-      if (acData.myAnswer && !answerText) {
-        setAnswerText(acData.myAnswer.answerText);
+    if (polled) {
+      setData(polled);
+      // Initialize scores from existing corrected answers
+      if (polled.allAnswers) {
+        const s: Record<string, number> = {};
+        for (const a of polled.allAnswers) {
+          if (a.corrected) s[a.id] = a.score;
+        }
+        setScores(s);
       }
     }
-  }, [acData, answerText]);
+  }, [polled]);
 
-  // Initialize speech recognition
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
+  const round = data?.round;
+  const roomStatus = data?.roomStatus ?? "waiting";
+  const isCreator = data?.isCreator ?? false;
+  const myAnswer = data?.myAnswer;
+  const allAnswers = data?.allAnswers ?? [];
+  const answersCount = data?.answersCount ?? 0;
+  const playersCount = data?.playersCount ?? 0;
 
-    const recognition = new SpeechRecognition();
-    recognition.lang = "ar-SA";
-    recognition.continuous = false;
-    recognition.interimResults = true;
-
-    recognition.onresult = (event: any) => {
-      let transcript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
-      }
-      setAnswerText(transcript);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    recognition.onerror = (event: any) => {
-      setIsListening(false);
-      toast({
-        title: "خطأ في التعرف على الصوت",
-        description: event.error === "not-allowed"
-          ? "الرجاء السماح بالوصول للميكروفون"
-          : "تعذّر التعرف على الصوت",
-        variant: "destructive",
-      });
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      try { recognition.stop(); } catch {}
-    };
-  }, [toast]);
-
-  const toggleListening = () => {
-    if (!recognitionRef.current) {
-      toast({
-        title: "غير مدعوم",
-        description: "متصفحك لا يدعم التعرف على الصوت",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    } else {
-      setAnswerText("");
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-        toast({ title: "🎙️ يتحدث الآن..." });
-      } catch {
-        toast({ title: "تعذّر بدء التسجيل", variant: "destructive" });
-      }
-    }
-  };
-
-  const handleSubmit = async () => {
-    const text = answerText.trim();
-    if (!text || submitting) return;
-    setSubmitting(true);
-    try {
-      const res = await fetch("/api/autocomplete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomId,
-          action: "submit_answer",
-          answerText: text,
-          usedVoice: isListening || answerText.length > 0,
-        }),
-      });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error);
-      toast({ title: "✅ تم إرسال إجابتك!" });
-      refresh();
-    } catch (e: any) {
-      toast({ title: "تعذّر الإرسال", description: e?.message, variant: "destructive" });
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const canAnswer = roomStatus === "answering" && round && !myAnswer;
+  const showResults = ["revealing", "chatting", "finished"].includes(roomStatus);
 
   const handleNewRound = async () => {
     try {
       const res = await fetch("/api/autocomplete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roomId, action: "new_round" }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
-      toast({ title: `🎯 الجولة ${d.round.roundNumber}!` });
-      setAnswerText("");
+      toast({ title: `🎯 الجولة ${d.round.round_number} — الحرف: ${d.round.letter}` });
+      setAnswers({ boy_name: "", girl_name: "", animal: "", country: "", plant: "" });
       refresh();
     } catch (e: any) {
-      toast({ title: "تعذّر بدء الجولة", description: e?.message, variant: "destructive" });
+      toast({ title: "تعذّر", description: e?.message, variant: "destructive" });
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/autocomplete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, action: "submit_answer", answers, usedVoice: false }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      toast({ title: "✅ تم إرسال إجاباتك!" });
+      refresh();
+    } catch (e: any) {
+      toast({ title: "تعذّر", description: e?.message, variant: "destructive" });
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleReveal = async () => {
     try {
       const res = await fetch("/api/autocomplete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roomId, action: "reveal" }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       refresh();
     } catch (e: any) {
-      toast({ title: "تعذّر الكشف", description: e?.message, variant: "destructive" });
+      toast({ title: "تعذّر", description: e?.message, variant: "destructive" });
+    }
+  };
+
+  const handleCorrect = async (answerId: string, score: number) => {
+    try {
+      const res = await fetch("/api/autocomplete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, action: "correct", answerId, score }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setScores((prev) => ({ ...prev, [answerId]: score }));
+      toast({ title: `✅ النتيجة: ${score}/50` });
+    } catch (e: any) {
+      toast({ title: "تعذّر", description: e?.message, variant: "destructive" });
     }
   };
 
   const handleAdvance = async (status: string) => {
     try {
-      await fetch("/api/state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomId, status }),
-      });
+      await fetch("/api/state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomId, status }) });
       refresh();
     } catch {}
   };
@@ -257,23 +150,30 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
   const handleLeave = async () => {
     setLeaving(true);
     try {
-      await fetch("/api/rooms/leave", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomId }),
-      });
+      await fetch("/api/rooms/leave", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roomId }) });
     } finally {
       setLeaving(false);
       onLeave();
     }
   };
 
-  const round = data?.round;
-  const myAnswer = data?.myAnswer;
-  const answers = data?.answers ?? [];
-  const revealed = data?.revealed ?? false;
-  const canAnswer = roomStatus === "answering" && !myAnswer;
-  const showAnswers = roomStatus === "revealing" || roomStatus === "chatting" || roomStatus === "finished";
+  // Calculate each answer's score based on creator's corrections
+  const getAnswerScore = (a: any) => {
+    if (scores[a.id] !== undefined) return scores[a.id];
+    if (a.corrected) return a.score;
+    return null;
+  };
+
+  // Auto-calculate score for an answer (10 per non-empty field)
+  const calcAutoScore = (a: any) => {
+    let s = 0;
+    if (a.boyName?.trim()) s += 10;
+    if (a.girlName?.trim()) s += 10;
+    if (a.animal?.trim()) s += 10;
+    if (a.country?.trim()) s += 10;
+    if (a.plant?.trim()) s += 10;
+    return s;
+  };
 
   return (
     <div className="relative min-h-screen bg-mystery-gradient">
@@ -289,18 +189,13 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
             خروج
           </Button>
           <Badge variant="outline" className="border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
-            <Sparkles className="ml-1 h-3 w-3" />
-            اتوبيس كومبليت
+            <Sparkles className="ml-1 h-3 w-3" /> اتوبيس كومبليت
           </Badge>
         </div>
 
         {/* Phase banner */}
-        <motion.div
-          key={roomStatus}
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className={cn(
-            "mb-4 rounded-2xl border p-4 backdrop-blur",
+        <motion.div key={roomStatus} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+          className={cn("mb-4 rounded-2xl border p-3 backdrop-blur sm:p-4",
             roomStatus === "answering" ? "border-cyan-500/40 bg-cyan-500/10" :
             roomStatus === "revealing" ? "border-amber-500/40 bg-amber-500/10" :
             roomStatus === "chatting" ? "border-emerald-500/40 bg-emerald-500/10" :
@@ -316,27 +211,19 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
               </div>
               <div>
                 <div className="text-sm font-semibold">
-                  {roomStatus === "waiting" ? "اضغط لبدء جولة جديدة" :
-                   roomStatus === "answering" ? "أكمل الجملة بسرعة!" :
-                   roomStatus === "revealing" ? "كشف الإجابات" :
-                   roomStatus === "chatting" ? "نقاش مباشر" :
-                   roomStatus === "finished" ? "الجولة منتهية" : roomStatus}
+                  {roomStatus === "waiting" ? "اضغط لبدء جولة" :
+                   roomStatus === "answering" ? "أكمل الفئات بسرعة!" :
+                   roomStatus === "revealing" ? "مراجعة الإجابات" :
+                   roomStatus === "chatting" ? "نقاش مباشر" : "منتهية"}
                 </div>
-                {round && (
-                  <div className="text-xs text-muted-foreground">الجولة {round.roundNumber}</div>
-                )}
+                {round && <div className="text-xs text-muted-foreground">الجولة {round.roundNumber}</div>}
               </div>
             </div>
 
             {roomStatus === "answering" && round && (
-              <CountdownTimer
-                duration={ROUND_DURATION}
-                startedAt={new Date(round.createdAt).getTime()}
-                variant="compact"
+              <CountdownTimer duration={ROUND_DURATION} startedAt={new Date(round.createdAt).getTime()} variant="compact"
                 className="font-mono text-lg font-bold"
-                onComplete={() => {
-                  if (isCreator) handleReveal();
-                }}
+                onComplete={() => { if (isCreator) handleReveal(); }}
               />
             )}
 
@@ -344,7 +231,7 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
               <div className="flex flex-wrap gap-2">
                 {(roomStatus === "waiting" || (roomStatus === "answering" && !round)) && (
                   <Button size="sm" onClick={handleNewRound} className="animate-pulse-glow">
-                    <Wand2 className="ml-1 h-4 w-4" /> جولة جديدة
+                    <Sparkles className="ml-1 h-4 w-4" /> جولة جديدة
                   </Button>
                 )}
                 {roomStatus === "answering" && round && (
@@ -353,19 +240,12 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
                   </Button>
                 )}
                 {roomStatus === "revealing" && (
-                  <>
-                    <Button size="sm" variant="default" onClick={handleNewRound}>
-                      <RefreshCw className="ml-1 h-4 w-4" /> جولة جديدة
-                    </Button>
-                    <Button size="sm" variant="secondary" onClick={() => handleAdvance("chatting")}>
-                      ابدأ النقاش
-                    </Button>
-                  </>
+                  <Button size="sm" variant="secondary" onClick={() => handleAdvance("chatting")}>
+                    ابدأ النقاش
+                  </Button>
                 )}
                 {roomStatus === "chatting" && (
-                  <Button size="sm" variant="secondary" onClick={() => handleAdvance("finished")}>
-                    إنهاء
-                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => handleAdvance("finished")}>إنهاء</Button>
                 )}
                 {roomStatus === "finished" && (
                   <Button size="sm" onClick={handleNewRound}>
@@ -377,186 +257,207 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
           </div>
         </motion.div>
 
-        {/* Main content */}
-        <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-          {/* Left: game */}
-          <div className="space-y-4">
-            {/* Phrase display */}
-            {round && (
-              <motion.div
-                key={round.id}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-              >
-                <Card className="border-cyan-500/30 bg-cyan-500/5 backdrop-blur">
-                  <CardContent className="p-5">
-                    <div className="mb-2 text-xs font-medium text-cyan-300">📝 أكمل الجملة:</div>
-                    <div className="text-xl font-bold sm:text-2xl leading-relaxed">
-                      {round.phrase}
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            )}
+        {/* Letter display */}
+        {round && (
+          <motion.div key={round.id} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="mb-4">
+            <Card className="border-cyan-500/30 bg-cyan-500/5 backdrop-blur">
+              <CardContent className="flex items-center justify-center py-6">
+                <div className="text-center">
+                  <div className="text-xs font-medium text-cyan-300 mb-1">الحرف</div>
+                  <div className="text-6xl font-bold text-glow-primary sm:text-7xl">{round.letter}</div>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
 
-            {/* Answer input */}
+        <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
+          <div className="space-y-4">
+            {/* Answer form */}
             {canAnswer && round && (
               <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
                 <Card className="border-border/40 bg-card/60 backdrop-blur">
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">✍️ إجابتك</span>
-                      <Button
-                        size="sm"
-                        variant={isListening ? "destructive" : "outline"}
-                        onClick={toggleListening}
-                        className={cn(isListening && "animate-pulse")}
-                      >
-                        {isListening ? <MicOff className="ml-1 h-4 w-4" /> : <Mic className="ml-1 h-4 w-4" />}
-                        {isListening ? "يتحدث..." : "إدخال صوتي"}
-                      </Button>
-                    </div>
-                    <Textarea
-                      value={answerText}
-                      onChange={(e) => setAnswerText(e.target.value)}
-                      placeholder={isListening ? "🎙️ يتحدث الآن..." : "اكمل الجملة هنا..."}
-                      className="bg-background/60 min-h-[70px] resize-none text-base"
-                      maxLength={200}
-                      disabled={submitting}
-                    />
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">{answerText.length}/200</span>
-                      <Button
-                        onClick={handleSubmit}
-                        disabled={submitting || answerText.trim().length === 0}
-                        size="sm"
-                      >
-                        {submitting ? <Loader2 className="ml-1 h-4 w-4 animate-spin" /> : <Send className="ml-1 h-4 w-4" />}
-                        إرسال
-                      </Button>
-                    </div>
+                  <CardHeader><CardTitle className="text-base">✍️ اكتب إجاباتك — حرف {round.letter}</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">
+                    {CATEGORIES.map((cat) => (
+                      <div key={cat.key} className="flex items-center gap-2">
+                        <Label className="flex w-20 shrink-0 items-center gap-1 text-sm">
+                          <span className="text-lg">{cat.icon}</span> {cat.label}
+                        </Label>
+                        <Input
+                          value={answers[cat.key]}
+                          onChange={(e) => setAnswers((prev) => ({ ...prev, [cat.key]: e.target.value }))}
+                          placeholder={`${cat.placeholder} يبدأ بـ ${round.letter}`}
+                          className="bg-background/60"
+                          maxLength={50}
+                          disabled={submitting}
+                        />
+                      </div>
+                    ))}
+                    <Button onClick={handleSubmit} disabled={submitting || !Object.values(answers).some(v => v.trim())} className="w-full" size="lg">
+                      {submitting ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Send className="ml-2 h-4 w-4" />}
+                      إرسال الإجابات
+                    </Button>
                   </CardContent>
                 </Card>
               </motion.div>
             )}
 
             {/* Already answered */}
-            {myAnswer && !showAnswers && (
+            {myAnswer && !showResults && (
               <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-center">
                 <CheckCircle2 className="mx-auto mb-2 h-6 w-6 text-emerald-400" />
-                <div className="text-sm font-medium text-emerald-300">تم إرسال إجابتك!</div>
-                <div className="mt-1 text-xs text-muted-foreground">بانتظار باقي اللاعبين...</div>
-                {myAnswer.responseTimeMs && (
-                  <Badge variant="outline" className="mt-2 text-[10px]">
-                    ⚡ {Math.round(myAnswer.responseTimeMs / 1000)}s
-                  </Badge>
-                )}
-                {myAnswer.usedVoice && (
-                  <Badge variant="outline" className="mt-2 mr-1 text-[10px] text-cyan-300">
-                    🎙️ صوتي
-                  </Badge>
-                )}
+                <div className="text-sm font-medium text-emerald-300">تم إرسال إجاباتك!</div>
+                <div className="mt-1 text-xs text-muted-foreground">{answersCount} / {playersCount} أجابوا</div>
               </div>
             )}
 
-            {/* Progress during answering */}
-            {!showAnswers && data?.answersCount !== undefined && data?.playersCount !== undefined && (
-              <div className="text-center text-xs text-muted-foreground">
-                {data.answersCount} / {data.playersCount} أجابوا
-              </div>
+            {/* Progress */}
+            {!showResults && round && !myAnswer && (
+              <div className="text-center text-xs text-muted-foreground">{answersCount} / {playersCount} أجابوا</div>
             )}
 
-            {/* Revealed answers */}
-            {showAnswers && answers.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-sm font-semibold text-muted-foreground">
-                  الإجابات ({answers.length})
-                </div>
-                <AnimatePresence>
-                  {answers.map((a, idx) => (
-                    <motion.div
-                      key={a.id}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: idx * 0.1 }}
-                    >
-                      <Card className={cn(
-                        "border-border/40 bg-card/50 backdrop-blur",
-                        a.isMine && "border-primary/40 bg-primary/5",
-                        idx === 0 && "border-amber-500/40 bg-amber-500/10",
-                      )}>
+            {/* Results — revealing/chatting */}
+            {showResults && allAnswers.length > 0 && (
+              <div className="space-y-3">
+                <div className="text-sm font-semibold text-muted-foreground">الإجابات ({allAnswers.length})</div>
+                {allAnswers.map((a, idx) => {
+                  const score = getAnswerScore(a);
+                  const autoScore = calcAutoScore(a);
+                  return (
+                    <motion.div key={a.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: idx * 0.1 }}>
+                      <Card className={cn("border-border/40 bg-card/50 backdrop-blur", a.isMine && "border-primary/40 bg-primary/5")}>
                         <CardContent className="p-3">
-                          <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="mb-2 flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <Avatar className="h-7 w-7">
-                                <AvatarFallback className="bg-secondary text-xs">{a.avatar || "?"}</AvatarFallback>
-                              </Avatar>
+                              <Avatar className="h-8 w-8"><AvatarFallback className="bg-secondary text-sm">{a.avatar || "?"}</AvatarFallback></Avatar>
                               <span className="text-sm font-medium">{a.username}</span>
                               {a.isMine && <Badge variant="outline" className="text-[10px]">أنت</Badge>}
                             </div>
-                            <div className="flex items-center gap-1">
-                              {a.usedVoice && (
-                                <Badge variant="outline" className="text-[10px] text-cyan-300">
-                                  <Mic className="h-2.5 w-2.5" /> صوتي
-                                </Badge>
-                              )}
-                              {a.responseTimeMs && (
-                                <Badge variant="outline" className="text-[10px]">
-                                  ⚡ {Math.round(a.responseTimeMs / 1000)}s
-                                </Badge>
-                              )}
-                              {idx === 0 && (
-                                <Badge className="bg-amber-500/20 text-amber-300 text-[10px]">🏆 الأسرع</Badge>
-                              )}
+                            {score !== null ? (
+                              <Badge className={cn("text-sm", score >= 40 ? "bg-emerald-500/20 text-emerald-300" : score >= 20 ? "bg-amber-500/20 text-amber-300" : "bg-rose-500/20 text-rose-300")}>
+                                {score}/50
+                              </Badge>
+                            ) : isCreator ? (
+                              <Badge variant="outline" className="text-[10px] text-amber-300">في انتظار التصحيح</Badge>
+                            ) : null}
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                            {CATEGORIES.map((cat) => {
+                              const val = a[cat.key.replace("boy_name","boyName").replace("girl_name","girlName")] || a[cat.key] || "";
+                              return (
+                                <div key={cat.key} className="flex items-center gap-2 rounded-lg bg-background/40 p-2 text-sm">
+                                  <span className="text-lg">{cat.icon}</span>
+                                  <span className="text-xs text-muted-foreground">{cat.label}:</span>
+                                  <span className={cn("font-medium", !val.trim() && "text-muted-foreground italic")}>
+                                    {val.trim() || "—"}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Creator correction */}
+                          {isCreator && roomStatus === "revealing" && (
+                            <div className="mt-3 border-t border-border/30 pt-3">
+                              <div className="mb-2 text-xs font-medium text-muted-foreground">التصحيح — اضغط على كل فقرة:</div>
+                              <div className="flex flex-wrap gap-2">
+                                {CATEGORIES.map((cat) => {
+                                  const key = cat.key.replace("boy_name","boyName").replace("girl_name","girlName");
+                                  const val = a[key] || a[cat.key] || "";
+                                  const fieldScore = scores[`${a.id}_${cat.key}`];
+                                  return (
+                                    <CategoryCorrectButton
+                                      key={cat.key}
+                                      label={cat.label}
+                                      icon={cat.icon}
+                                      value={val}
+                                      score={fieldScore}
+                                      onCorrect={(s) => {
+                                        const currentTotal = scores[a.id] ?? 0;
+                                        const oldField = scores[`${a.id}_${cat.key}`] ?? 0;
+                                        const newTotal = currentTotal - oldField + s;
+                                        setScores((prev) => ({ ...prev, [`${a.id}_${cat.key}`]: s }));
+                                        handleCorrect(a.id, newTotal);
+                                      }}
+                                    />
+                                  );
+                                })}
+                              </div>
                             </div>
-                          </div>
-                          <div className="text-sm leading-relaxed">
-                            <span className="text-muted-foreground">{round?.phrase} </span>
-                            <span className="font-medium">{a.answerText}</span>
-                          </div>
+                          )}
                         </CardContent>
                       </Card>
                     </motion.div>
-                  ))}
-                </AnimatePresence>
+                  );
+                })}
+
+                {/* Leaderboard */}
+                {showResults && (
+                  <Card className="border-amber-500/30 bg-amber-500/5 backdrop-blur">
+                    <CardHeader><CardTitle className="text-base">🏆 النتائج</CardTitle></CardHeader>
+                    <CardContent>
+                      {[...allAnswers]
+                        .sort((a, b) => (getAnswerScore(b) ?? 0) - (getAnswerScore(a) ?? 0))
+                        .map((a, idx) => (
+                          <div key={a.id} className={cn("flex items-center gap-3 rounded-lg p-2", a.isMine && "bg-primary/5")}>
+                            <div className="w-6 text-center font-bold text-muted-foreground">{idx + 1}</div>
+                            <Avatar className="h-8 w-8"><AvatarFallback className="bg-secondary text-sm">{a.avatar}</AvatarFallback></Avatar>
+                            <div className="flex-1">
+                              <span className="text-sm font-medium">{a.username}</span>
+                              {a.isMine && <span className="text-xs text-muted-foreground"> (أنت)</span>}
+                            </div>
+                            <Badge className={cn(idx === 0 && getAnswerScore(a) > 0 ? "bg-amber-500/20 text-amber-300" : "")}>
+                              {getAnswerScore(a) ?? 0}/50
+                            </Badge>
+                          </div>
+                        ))}
+                    </CardContent>
+                  </Card>
+                )}
               </div>
             )}
 
-            {/* Waiting state */}
-            {roomStatus === "waiting" && !isCreator && (
+            {/* Waiting */}
+            {!round && !isCreator && (
               <Card className="border-dashed border-border/50 bg-card/30">
                 <CardContent className="py-10 text-center">
                   <Sparkles className="mx-auto mb-3 h-8 w-8 text-cyan-400/50" />
-                  <p className="text-sm text-muted-foreground">
-                    بانتظار أن يبدأ المنشئ جولة جديدة...
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-
-            {roomStatus === "answering" && !round && !isCreator && (
-              <Card className="border-dashed border-border/50 bg-card/30">
-                <CardContent className="py-10 text-center">
-                  <Sparkles className="mx-auto mb-3 h-8 w-8 text-cyan-400/50" />
-                  <p className="text-sm text-muted-foreground">
-                    بانتظار أن يبدأ المنشئ الجولة...
-                  </p>
+                  <p className="text-sm text-muted-foreground">بانتظار أن يبدأ المنشئ جولة...</p>
                 </CardContent>
               </Card>
             )}
           </div>
 
-          {/* Right: chat */}
-          <div className="space-y-4">
-            <ChatPanel
-              roomId={roomId}
-              anonymousName={user.username}
-              enabled
-              className="h-[400px] lg:h-[500px]"
-            />
+          {/* Chat */}
+          <div>
+            <ChatPanel roomId={roomId} anonymousName={user.username} enabled className="h-[400px] lg:h-[500px]" />
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CategoryCorrectButton({ label, icon, value, score, onCorrect }: {
+  label: string; icon: string; value: string; score?: number; onCorrect: (s: number) => void;
+}) {
+  if (!value.trim()) {
+    return (
+      <div className="flex items-center gap-1 rounded-lg border border-border/30 bg-secondary/20 px-2 py-1 text-xs text-muted-foreground">
+        <span>{icon}</span> {label}: —
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-xs">{icon} {label}:</span>
+      <Button size="sm" variant={score === 10 ? "default" : "outline"} className="h-6 px-2 text-[10px]"
+        onClick={() => onCorrect(score === 10 ? 0 : 10)}
+      >
+        {score === 10 ? <><Check className="h-3 w-3" /> 10</> : <><X className="h-3 w-3" /> 0</>}
+      </Button>
     </div>
   );
 }

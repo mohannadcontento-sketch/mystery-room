@@ -3,54 +3,33 @@ import { z } from "zod";
 import { getSupabase } from "@/lib/supabase";
 import { getCurrentUser } from "@/lib/auth";
 
-// Pool of sentence starters for autocomplete battle (Arabic)
-const PHRASES_AR = [
-  "أجمل ذكرى لدي هي...",
-  "لو كنت ممثلاً مشهوراً سأقوم بـ...",
-  "أكثر شيء يخيفني هو...",
-  "حلمي الذي لم أحققه بعد هو...",
-  "لو حصلت على مليون دولار سأشتري...",
-  "أسوأ عادة فيّ هي...",
-  "أحب أن أتناول الإفطار مع...",
-  "لو عشت في عالم خيالي سأكون...",
-  "أكثر شخص أ Admirه هو...",
-  "لو سافرت بالزمن سأذهب إلى...",
-  "أفضل نصيحة سمعتها هي...",
-  "لو كان لدي قوة خارقة سأختار...",
-  "أكثر مكان يشعرني بالسلام هو...",
-  "لو التقيت بنفسي الصغير سأقول له...",
-  "أسوأ قرار اتخذته كان...",
-  "أحب أن أقضي وقتي الحر في...",
-  "لو ألغوا الإنترنت يوماً سأ...",
-  "أكثر طبق أكرهه هو...",
-  "لو كنت رئيساً سأبدأ بـ...",
-  "أجمل صوت سمعته هو...",
-  "لو فقدت ذاكرتي آخر شيء أريد تذكره...",
-  "أكثر فيلم أثر فيّ هو...",
-  "لو كانت حياتي فيلماً سيكون اسمه...",
-  "أخاف من الأماكن التي...",
-  "لو التقيت بملاك سيقول لي...",
-  "أكثر أغنية تذكرني بطفولتي...",
-  "لو كان لي لون واحد سأختار...",
-  "أجمل هدية تلقيتها كانت...",
-  "لو عشت مرة أخرى سأ...",
-  "أكثر لحظة أحب تذكرها...",
-];
+// Arabic letters for the game (excluding difficult letters)
+const LETTERS = ["أ","ب","ت","ث","ج","ح","خ","د","ذ","ر","ز","س","ش","ص","ض","ط","ظ","ع","غ","ف","ق","ك","ل","م","ن","ه","و","ي"];
 
-const PHRASES_EN = [
-  "The best memory I have is...",
-  "If I were a famous actor I would...",
-  "The scariest thing to me is...",
-  "My unfulfilled dream is...",
-  "If I got a million dollars I would buy...",
-  "My worst habit is...",
-  "I love having breakfast with...",
-  "If I lived in a fantasy world I would be...",
-  "The person I admire most is...",
-  "If I time-traveled I would go to...",
-];
+const CATEGORIES = ["boy_name","girl_name","animal","country","plant"] as const;
+const CATEGORY_LABELS: Record<string,string> = {
+  boy_name: "ولد",
+  girl_name: "بنت",
+  animal: "حيوان",
+  country: "بلاد",
+  plant: "نبات",
+};
 
-/** Generate a random phrase for the room. */
+const submitSchema = z.object({
+  roomId: z.string(),
+  action: z.enum(["new_round","submit_answer","reveal","correct"]),
+  answers: z.object({
+    boy_name: z.string(),
+    girl_name: z.string(),
+    animal: z.string(),
+    country: z.string(),
+    plant: z.string(),
+  }).optional(),
+  usedVoice: z.boolean().optional(),
+  answerId: z.string().optional(),
+  score: z.number().optional(),
+});
+
 export async function GET(req: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -62,107 +41,62 @@ export async function GET(req: NextRequest) {
 
     const supabase = getSupabase();
 
-    // Verify membership
     const { data: membership } = await supabase
-      .from("room_players")
-      .select("id")
-      .eq("room_id", roomId)
-      .eq("user_id", user.id)
-      .maybeSingle();
+      .from("room_players").select("id").eq("room_id", roomId).eq("user_id", user.id).maybeSingle();
     if (!membership) return NextResponse.json({ error: "أنت لست عضواً" }, { status: 403 });
 
-    // Get current autocomplete round (if any)
-    const { data: currentRound } = await supabase
+    const { data: room } = await supabase.from("rooms").select("status, creator_id").eq("id", roomId).maybeSingle();
+    if (!room) return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
+
+    // Get current round
+    const { data: round } = await supabase
       .from("autocomplete_rounds")
-      .select("id, phrase, round_number, time_limit, created_at")
-      .eq("room_id", roomId)
-      .order("round_number", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .select("id, letter, round_number, time_limit, created_at")
+      .eq("room_id", roomId).order("round_number",{ascending:false}).limit(1).maybeSingle();
 
-    // Get answers for this round (if revealing/chatting)
-    const { data: room } = await supabase
-      .from("rooms")
-      .select("status")
-      .eq("id", roomId)
-      .maybeSingle();
-
-    let answers: any[] = [];
     let myAnswer: any = null;
+    let allAnswers: any[] = [];
+    let answersCount = 0;
+    let playersCount = 0;
 
-    if (currentRound && room && ["revealing", "chatting", "finished"].includes(room.status)) {
-      const { data: ans } = await supabase
-        .from("autocomplete_answers")
-        .select("id, answer_text, used_voice, submitted_at, response_time_ms, user_id, profiles!autocomplete_answers_user_id_fkey(username, avatar)")
-        .eq("round_id", currentRound.id)
-        .order("submitted_at", { ascending: true });
-      answers = (ans ?? []).map((a: any) => ({
-        id: a.id,
-        answerText: a.answer_text,
-        usedVoice: a.used_voice,
-        responseTimeMs: a.response_time_ms,
-        username: a.profiles?.username,
-        avatar: a.profiles?.avatar,
-        isMine: a.user_id === user.id,
-      }));
-    } else if (currentRound) {
-      // During answering — only show my own answer
+    const { count: pc } = await supabase.from("room_players").select("id",{count:"exact",head:true}).eq("room_id",roomId);
+    playersCount = pc ?? 0;
+
+    if (round) {
+      // My answer
       const { data: myAns } = await supabase
         .from("autocomplete_answers")
-        .select("id, answer_text, used_voice, submitted_at, response_time_ms")
-        .eq("round_id", currentRound.id)
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (myAns) {
-        myAnswer = {
-          id: myAns.id,
-          answerText: myAns.answer_text,
-          usedVoice: myAns.used_voice,
-          responseTimeMs: myAns.response_time_ms,
-        };
+        .select("id, boy_name, girl_name, animal, country, plant, used_voice, response_time_ms, score, corrected, submitted_at")
+        .eq("round_id", round.id).eq("user_id", user.id).maybeSingle();
+      myAnswer = myAns;
+
+      const { count: ac } = await supabase.from("autocomplete_answers").select("id",{count:"exact",head:true}).eq("round_id", round.id);
+      answersCount = ac ?? 0;
+
+      // During revealing/chatting — show all answers with player names
+      if (["revealing","chatting","finished"].includes(room.status)) {
+        const { data: ans } = await supabase
+          .from("autocomplete_answers")
+          .select("id, boy_name, girl_name, animal, country, plant, used_voice, response_time_ms, score, corrected, user_id, profiles!autocomplete_answers_user_id_fkey(username, avatar)")
+          .eq("round_id", round.id).order("submitted_at",{ascending:true});
+        allAnswers = (ans ?? []).map((a: any) => ({
+          id: a.id,
+          boyName: a.boy_name, girlName: a.girl_name, animal: a.animal, country: a.country, plant: a.plant,
+          usedVoice: a.used_voice, responseTimeMs: a.response_time_ms, score: a.score, corrected: a.corrected,
+          username: a.profiles?.username, avatar: a.profiles?.avatar, isMine: a.user_id === user.id,
+        }));
       }
-
-      // Count answers (for progress)
-      const { count: answersCount } = await supabase
-        .from("autocomplete_answers")
-        .select("id", { count: "exact", head: true })
-        .eq("round_id", currentRound.id);
-
-      const { count: playersCount } = await supabase
-        .from("room_players")
-        .select("id", { count: "exact", head: true })
-        .eq("room_id", roomId);
-
-      return NextResponse.json({
-        round: currentRound
-          ? {
-              id: currentRound.id,
-              phrase: currentRound.phrase,
-              roundNumber: currentRound.round_number,
-              timeLimit: currentRound.time_limit,
-              createdAt: currentRound.created_at,
-            }
-          : null,
-        myAnswer,
-        answersCount: answersCount ?? 0,
-        playersCount: playersCount ?? 0,
-        revealed: false,
-      });
     }
 
     return NextResponse.json({
-      round: currentRound
-        ? {
-            id: currentRound.id,
-            phrase: currentRound.phrase,
-            roundNumber: currentRound.round_number,
-            timeLimit: currentRound.time_limit,
-            createdAt: currentRound.created_at,
-          }
-        : null,
-      myAnswer: myAnswer,
-      answers,
-      revealed: true,
+      round: round ? { id: round.id, letter: round.letter, roundNumber: round.round_number, timeLimit: round.time_limit, createdAt: round.created_at } : null,
+      myAnswer,
+      allAnswers,
+      answersCount,
+      playersCount,
+      roomStatus: room.status,
+      isCreator: room.creator_id === user.id,
+      categoryLabels: CATEGORY_LABELS,
     });
   } catch (e) {
     console.error("[autocomplete/get]", e);
@@ -170,146 +104,67 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** Create a new autocomplete round (admin only). */
 export async function POST(req: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "غير مصرح" }, { status: 401 });
 
     const body = await req.json();
-    const schema = z.object({
-      roomId: z.string(),
-      action: z.enum(["new_round", "submit_answer", "reveal"]),
-      answerText: z.string().optional(),
-      usedVoice: z.boolean().optional(),
-    });
-    const parsed = schema.safeParse(body);
+    const parsed = submitSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: "بيانات غير صالحة" }, { status: 400 });
 
-    const { roomId, action, answerText, usedVoice } = parsed.data;
+    const { roomId, action, answers, usedVoice, answerId, score } = parsed.data;
     const supabase = getSupabase();
 
-    // Verify membership
-    const { data: membership } = await supabase
-      .from("room_players")
-      .select("id")
-      .eq("room_id", roomId)
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const { data: membership } = await supabase.from("room_players").select("id").eq("room_id", roomId).eq("user_id", user.id).maybeSingle();
     if (!membership) return NextResponse.json({ error: "أنت لست عضواً" }, { status: 403 });
 
+    const { data: room } = await supabase.from("rooms").select("creator_id, status").eq("id", roomId).maybeSingle();
+    if (!room) return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
+
     if (action === "new_round") {
-      // Only creator can create rounds
-      const { data: room } = await supabase
-        .from("rooms")
-        .select("creator_id, status")
-        .eq("id", roomId)
-        .maybeSingle();
-      if (!room) return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
       if (room.creator_id !== user.id) return NextResponse.json({ error: "فقط المنشئ" }, { status: 403 });
-
-      // Get next round number
-      const { data: lastRound } = await supabase
-        .from("autocomplete_rounds")
-        .select("round_number")
-        .eq("room_id", roomId)
-        .order("round_number", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const { data: lastRound } = await supabase.from("autocomplete_rounds").select("round_number").eq("room_id", roomId).order("round_number",{ascending:false}).limit(1).maybeSingle();
       const nextRound = (lastRound?.round_number ?? 0) + 1;
+      const letter = LETTERS[Math.floor(Math.random() * LETTERS.length)];
 
-      // Pick a random phrase
-      const phrases = PHRASES_AR;
-      const phrase = phrases[Math.floor(Math.random() * phrases.length)];
-
-      // Create the round
-      const { data: newRound, error } = await supabase
-        .from("autocomplete_rounds")
-        .insert({
-          room_id: roomId,
-          round_number: nextRound,
-          phrase,
-          language: "ar",
-          time_limit: 30,
-        })
-        .select("id, phrase, round_number, time_limit, created_at")
-        .single();
-
+      const { data: newRound, error } = await supabase.from("autocomplete_rounds").insert({ room_id: roomId, round_number: nextRound, letter, time_limit: 60 }).select("id, letter, round_number, time_limit, created_at").single();
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-      // Set room status to answering
       await supabase.from("rooms").update({ status: "answering" }).eq("id", roomId);
-
       return NextResponse.json({ round: newRound });
     }
 
     if (action === "submit_answer") {
-      if (!answerText || answerText.trim().length === 0) {
-        return NextResponse.json({ error: "الإجابة فارغة" }, { status: 400 });
-      }
+      if (!answers) return NextResponse.json({ error: "الإجابات مطلوبة" }, { status: 400 });
+      const { data: round } = await supabase.from("autocomplete_rounds").select("id, created_at").eq("room_id", roomId).order("round_number",{ascending:false}).limit(1).maybeSingle();
+      if (!round) return NextResponse.json({ error: "لا توجد جولة نشطة" }, { status: 404 });
+      if (room.status !== "answering") return NextResponse.json({ error: "انتهى الوقت" }, { status: 400 });
 
-      // Get current round
-      const { data: currentRound } = await supabase
-        .from("autocomplete_rounds")
-        .select("id, created_at")
-        .eq("room_id", roomId)
-        .order("round_number", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!currentRound) return NextResponse.json({ error: "لا توجد جولة نشطة" }, { status: 404 });
+      const { data: existing } = await supabase.from("autocomplete_answers").select("id").eq("round_id", round.id).eq("user_id", user.id).maybeSingle();
+      if (existing) return NextResponse.json({ error: "أجبت بالفعل" }, { status: 400 });
 
-      // Check room status
-      const { data: room } = await supabase
-        .from("rooms")
-        .select("status")
-        .eq("id", roomId)
-        .maybeSingle();
-      if (!room || room.status !== "answering") {
-        return NextResponse.json({ error: "انتهى وقت الإجابة" }, { status: 400 });
-      }
-
-      // Check if already answered
-      const { data: existing } = await supabase
-        .from("autocomplete_answers")
-        .select("id")
-        .eq("round_id", currentRound.id)
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (existing) return NextResponse.json({ error: "لقد أجبت بالفعل" }, { status: 400 });
-
-      // Calculate response time
-      const createdAt = new Date(currentRound.created_at).getTime();
-      const responseTimeMs = Date.now() - createdAt;
-
-      // Insert answer
-      const { data: answer, error } = await supabase
-        .from("autocomplete_answers")
-        .insert({
-          round_id: currentRound.id,
-          user_id: user.id,
-          answer_text: answerText.trim(),
-          used_voice: usedVoice ?? false,
-          response_time_ms: responseTimeMs,
-        })
-        .select("id, answer_text, used_voice, response_time_ms")
-        .single();
-
+      const responseTimeMs = Date.now() - new Date(round.created_at).getTime();
+      const { data: ans, error } = await supabase.from("autocomplete_answers").insert({
+        round_id: round.id, user_id: user.id,
+        boy_name: answers.boy_name.trim(), girl_name: answers.girl_name.trim(),
+        animal: answers.animal.trim(), country: answers.country.trim(), plant: answers.plant.trim(),
+        used_voice: usedVoice ?? false, response_time_ms: responseTimeMs, score: 0, corrected: false,
+      }).select("id").single();
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-      return NextResponse.json({ answer });
+      return NextResponse.json({ answer: ans });
     }
 
     if (action === "reveal") {
-      // Only creator can reveal
-      const { data: room } = await supabase
-        .from("rooms")
-        .select("creator_id")
-        .eq("id", roomId)
-        .maybeSingle();
-      if (!room) return NextResponse.json({ error: "الغرفة غير موجودة" }, { status: 404 });
       if (room.creator_id !== user.id) return NextResponse.json({ error: "فقط المنشئ" }, { status: 403 });
-
       await supabase.from("rooms").update({ status: "revealing" }).eq("id", roomId);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === "correct") {
+      if (room.creator_id !== user.id) return NextResponse.json({ error: "فقط المنشئ يصحح" }, { status: 403 });
+      if (!answerId || score === undefined) return NextResponse.json({ error: "answerId و score مطلوبان" }, { status: 400 });
+      const { error } = await supabase.from("autocomplete_answers").update({ score, corrected: true }).eq("id", answerId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ ok: true });
     }
 
