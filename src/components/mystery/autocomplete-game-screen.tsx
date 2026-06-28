@@ -342,12 +342,12 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
 
             {isCreator && (
               <div className="flex flex-wrap gap-2">
-                {roomStatus === "waiting" && (
+                {(roomStatus === "waiting" || (roomStatus === "answering" && !round)) && (
                   <Button size="sm" onClick={handleNewRound} className="animate-pulse-glow">
                     <Wand2 className="ml-1 h-4 w-4" /> جولة جديدة
                   </Button>
                 )}
-                {roomStatus === "answering" && (
+                {roomStatus === "answering" && round && (
                   <Button size="sm" variant="secondary" onClick={handleReveal}>
                     <Eye className="ml-1 h-4 w-4" /> اكشف
                   </Button>
@@ -529,6 +529,17 @@ export function AutocompleteGameScreen({ user, roomId, onLeave }: AutocompleteGa
                   <Sparkles className="mx-auto mb-3 h-8 w-8 text-cyan-400/50" />
                   <p className="text-sm text-muted-foreground">
                     بانتظار أن يبدأ المنشئ جولة جديدة...
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
+            {roomStatus === "answering" && !round && !isCreator && (
+              <Card className="border-dashed border-border/50 bg-card/30">
+                <CardContent className="py-10 text-center">
+                  <Sparkles className="mx-auto mb-3 h-8 w-8 text-cyan-400/50" />
+                  <p className="text-sm text-muted-foreground">
+                    بانتظار أن يبدأ المنشئ الجولة...
                   </p>
                 </CardContent>
               </Card>
