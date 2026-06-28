@@ -113,7 +113,7 @@ export default function Home() {
               user={user}
               roomId={view.roomId}
               onLeave={() => setView({ name: "home" })}
-              onStart={() => setView({ name: "game", roomId: view.roomId, gameMode: view.gameMode })}
+              onStart={(gameMode) => setView({ name: "game", roomId: view.roomId, gameMode: gameMode as any })}
             />
           )}
 

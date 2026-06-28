@@ -30,7 +30,7 @@ interface LobbyScreenProps {
   user: Profile;
   roomId: string;
   onLeave: () => void;
-  onStart: () => void;
+  onStart: (gameMode?: string) => void;
 }
 
 interface PlayerWithReady extends RoomPlayer {
@@ -80,7 +80,7 @@ export function LobbyScreen({ user, roomId, onLeave, onStart }: LobbyScreenProps
   // If game started, go to game screen
   useEffect(() => {
     if (data?.room?.status && data.room.status !== "waiting") {
-      onStart();
+      onStart(data?.room?.gameMode);
     }
   }, [data?.room?.status, onStart]);
 
@@ -95,7 +95,7 @@ export function LobbyScreen({ user, roomId, onLeave, onStart }: LobbyScreenProps
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ roomId, ready: true }),
         });
-        if (res.ok) onStart();
+        if (res.ok) onStart(data?.room?.gameMode);
       } catch {}
     }, 500);
     return () => clearTimeout(t);
@@ -137,7 +137,7 @@ export function LobbyScreen({ user, roomId, onLeave, onStart }: LobbyScreenProps
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
-      onStart();
+      onStart(data?.room?.gameMode);
     } catch (e: any) {
       toast({
         title: "تعذّر البدء",
